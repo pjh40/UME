@@ -37,6 +37,7 @@ catch_discover_tests(ume_tests PROPERTIES TIMEOUT 120)
 
 add_executable(ume_gpu_tests
   test_atomic_add.cc
+  test_brick.cc
   test_mesh.cc
   test_scratch_arrays.cc
   custom_main.cc

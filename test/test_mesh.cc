@@ -170,8 +170,7 @@ TEST_CASE(
    zero of the arrays they read, which is a hard error on an empty one. */
 TEST_CASE("an empty mesh can still derive its variables", "[mesh]") {
   Mesh mesh;
-  Ume::Comm::Dummy_Transport transport;
-  mesh.comm = &transport;
+  Ume::attach_serial_transport(mesh);
   mesh.ivtag = UME_VERSION_2;
   mesh.version_header = true;
   mesh.mype = 0;

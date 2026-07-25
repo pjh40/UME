@@ -9,6 +9,7 @@
 #  -checks=-*,bugprone-*;)
 
 set(UME_INCLUDE_FILES
+  Brick_Mesh.hh
   Comm_Buffers.hh
   Comm_MPI.hh
   Comm_Neighbors.hh
@@ -43,6 +44,7 @@ set(UME_INCLUDE_FILES
 
 add_library(Ume
   ${UME_INCLUDE_FILES}
+  Brick_Mesh.cc
   Comm_Buffers.cc
   Comm_MPI.cc
   Comm_Neighbors.cc
