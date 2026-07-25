@@ -15,6 +15,7 @@
 
 #include "Ume/Brick_Mesh.hh"
 #include "Ume/Comm_Transport.hh"
+#include "Ume/mesh_audit.hh"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -705,81 +706,31 @@ void attach_serial_transport(Mesh &mesh) {
 }
 
 bool validate(Mesh &mesh, Spec const &spec, std::ostream &os) {
-  bool ok{true};
+  /* Everything that is true of any mesh lives in the shared audit; what is
+     left here needs to know that this mesh is a brick of known cell size. */
+  SOA_Idx::Audit_Options aopts;
+  aopts.census = true;
+  bool ok = SOA_Idx::audit(mesh, os, aopts).ok();
+
   auto fail = [&os, &ok](char const *const what) -> std::ostream & {
     ok = false;
-    return os << "  FAIL " << what << ": ";
+    return os << "  [" << what << "] ";
   };
 
-  auto const &s2z = mesh.ds->caccess_intv("m:s>z");
-  auto const &s2p1 = mesh.ds->caccess_intv("m:s>p1");
-  auto const &s2p2 = mesh.ds->caccess_intv("m:s>p2");
-  auto const &s2e = mesh.ds->caccess_intv("m:s>e");
-  auto const &s2f = mesh.ds->caccess_intv("m:s>f");
-  auto const &s2c1 = mesh.ds->caccess_intv("m:s>c1");
-  auto const &s2c2 = mesh.ds->caccess_intv("m:s>c2");
-  auto const &s2s2 = mesh.ds->caccess_intv("m:s>s2");
-  auto const &c2p = mesh.ds->caccess_intv("m:c>p");
-  auto const &c2z = mesh.ds->caccess_intv("m:c>z");
   auto const &z2c = mesh.ds->caccess_intrr("m:z>c");
-  auto const &smask = mesh.sides.mask;
-  auto const &cmask = mesh.corners.mask;
+  auto const &corner_vol = mesh.ds->caccess_dblv("corner_vol");
+  auto const &point_norm = mesh.ds->caccess_vec3v("point_norm");
   auto const &zmask = mesh.zones.mask;
   auto const &pmask = mesh.points.mask;
 
-  int const sll = mesh.sides.size();
   int const pll = mesh.points.size();
   int const zll = mesh.zones.size();
-
-  /* --- topology --- */
-  for (int s = 0; s < sll; ++s) {
-    int const s2 = s2s2[s];
-    if (s2 < 0 || s2 >= sll) {
-      fail("m:s>s2") << "side " << s << " has no partner\n";
-      break;
-    }
-    if (s2s2[s2] != s || s2f[s2] != s2f[s] || s2e[s2] != s2e[s]) {
-      fail("m:s>s2") << "side " << s << " and " << s2
-                     << " are not a (face, edge) pair\n";
-      break;
-    }
-    if (c2z[s2c1[s]] != s2z[s] || c2p[s2c1[s]] != s2p1[s] ||
-        c2z[s2c2[s]] != s2z[s] || c2p[s2c2[s]] != s2p2[s]) {
-      fail("m:s>c1/c2") << "side " << s << " corners do not match (z, p1/p2)\n";
-      break;
-    }
-  }
-
-  /* Every point must own at least one corner with cmask >= 1: `gradzatp`
-     divides by a point volume accumulated only over those corners. */
-  {
-    std::vector<int> real_corners(static_cast<size_t>(pll), 0);
-    for (int c = 0; c < mesh.corners.local_size(); ++c)
-      if (cmask[c] >= 1)
-        real_corners[static_cast<size_t>(c2p[c])] += 1;
-    for (int p = 0; p < pll; ++p)
-      if (real_corners[static_cast<size_t>(p)] == 0) {
-        fail("corner masks") << "point " << p << " has no cmask >= 1 corner\n";
-        break;
-      }
-  }
-
-  /* --- geometry --- */
-  auto const &side_vol = mesh.ds->caccess_dblv("side_vol");
-  auto const &corner_vol = mesh.ds->caccess_dblv("corner_vol");
-  auto const &csurf = mesh.ds->caccess_vec3v("corner_csurf");
-  auto const &point_norm = mesh.ds->caccess_vec3v("point_norm");
 
   double const cell_vol = spec.dx * spec.dy * spec.dz;
   double const eps = 1e-11 * cell_vol;
 
-  for (int s = 0; s < sll; ++s)
-    if (smask[s] > 0 && side_vol[s] <= 0.0) {
-      fail("side_vol") << "side " << s << " has volume " << side_vol[s]
-                       << " (check the p1/p2 orientation convention)\n";
-      break;
-    }
-
+  /* Each zone is a whole cell (8 corners) or one of six Kuhn tetrahedra (4
+     corners), whatever its faces were split into. */
   double total_vol{0.0};
   for (int z = 0; z < zll; ++z) {
     if (zmask[z] < 1)
@@ -798,23 +749,13 @@ bool validate(Mesh &mesh, Spec const &spec, std::ostream &os) {
                           << want << '\n';
       break;
     }
-    Vec3 net(0.0);
-    for (int const c : z2c[z])
-      net += csurf[c];
-    double const area_eps = 1e-10 *
-        std::max({spec.dx * spec.dy, spec.dy * spec.dz, spec.dz * spec.dx});
-    if (vectormag(net) > area_eps) {
-      fail("corner_csurf") << "zone " << z << " corner surfaces sum to " << net
-                           << ", expected zero\n";
-      break;
-    }
   }
   double const want_vol = spec.num_cells() * cell_vol;
   if (std::abs(total_vol - want_vol) > 1e-10 * want_vol)
     fail("mesh volume") << total_vol << ", expected " << want_vol << '\n';
 
-  /* Point normals: unit length on the boundary, and exactly the outward axis
-     normal in the interior of a face of the brick. */
+  /* Point masks follow the lattice, and a point in the interior of a face of
+     the brick has exactly the outward axis normal. */
   int const np[3] = {spec.nx, spec.ny, spec.nz};
   for (int p = 0; p < pll; ++p) {
     int const ijk[3] = {p % (spec.nx + 1), (p / (spec.nx + 1)) % (spec.ny + 1),
@@ -834,13 +775,6 @@ bool validate(Mesh &mesh, Spec const &spec, std::ostream &os) {
     if ((nfaces > 0) != (pmask[p] < 0)) {
       fail("point mask") << "point " << p << " has mask " << pmask[p]
                          << " but lies on " << nfaces << " brick face(s)\n";
-      break;
-    }
-    if (nfaces == 0)
-      continue;
-    if (std::abs(vectormag(point_norm[p]) - 1.0) > 1e-12) {
-      fail("point_norm") << "point " << p << " normal " << point_norm[p]
-                         << " is not a unit vector\n";
       break;
     }
     if (nfaces == 1) {

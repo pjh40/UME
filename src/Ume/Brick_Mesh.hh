@@ -59,20 +59,20 @@ enum class Fraction_Basis : std::uint8_t {
 };
 
 //! How the physical mesh boundary is represented
+/*! Either style produces a mesh that every consumer in the library accepts;
+    see `doc/brick_mesh.md` for the reasoning behind the default. */
 enum class Boundary_Style : std::uint8_t {
   /*! Each boundary face gets a degenerate "boundary zone" outside the mesh
       (`zmask == -1`) owning one zero-volume corner per face point
-      (`cmask == -1`) and the phantom sides (`smask == -1`).  This matches the
-      DELFI/heritage convention implied by the Ume consumers: `VAR_side_surf`
-      documents that a phantom side has no usable `zcoord`, which is only true
-      if `m:s>z` points at a degenerate zone, and `VAR_zcoord` averages every
-      `cmask != 0` corner, which would be wrong if phantom corners were added
-      to the *real* zone. */
+      (`cmask == -1`) and the phantom sides (`smask == -1`).  This is what the
+      library's own consumers imply: `VAR_side_surf` treats a phantom side as
+      having no usable `zcoord`, which only holds if `m:s>z` names a degenerate
+      zone, and `VAR_zcoord` averages every `cmask != 0` corner, which would
+      shift the centroid if phantom corners were added to the *real* zone. */
   BOUNDARY_ZONES,
   /*! No extra zones or corners: phantom sides point back at the adjacent real
-      zone and its corners.  This is the convention proposed in Appendix A.4 of
-      `trad-vs-invert.md`; it produces a mesh with no `mask < 0` zones or
-      corners at all. */
+      zone and its corners, so the mesh has no `mask < 0` zones or corners at
+      all. */
   PHANTOM_SIDES_ONLY
 };
 

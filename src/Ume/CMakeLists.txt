@@ -33,6 +33,7 @@ set(UME_INCLUDE_FILES
   atomic_add.hh
   face_area.hh
   gradient.hh
+  mesh_audit.hh
   renumbering.hh
   soa_idx_helpers.hh
   utils.hh
@@ -61,6 +62,7 @@ add_library(Ume
   SOA_Idx_Iotas.cc
   face_area.cc
   gradient.cc
+  mesh_audit.cc
   renumbering.cc
   utils.cc
   process_mgmt.cc

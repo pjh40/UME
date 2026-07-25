@@ -18,8 +18,10 @@
 
 #include "Ume/Brick_Mesh.hh"
 #include "Ume/gradient.hh"
+#include "Ume/mesh_audit.hh"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <sstream>
 
 using namespace Ume;
@@ -319,5 +321,102 @@ TEST_CASE("brick: gradzatz and gradzatz_invert agree", "[brick][gradient]") {
       INFO("zone " << z);
       REQUIRE(vectormag(zgrad[z] - zgrad_inv[z]) <= GRAD_TOL);
     }
+  }
+}
+
+TEST_CASE("audit: a generated brick is clean", "[brick][audit]") {
+  for (auto const &spec : sweep()) {
+    INFO(describe(spec));
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(spec, mesh);
+
+    std::ostringstream report;
+    SOA_Idx::Audit_Options opts;
+    opts.census = true;
+    SOA_Idx::Audit_Result const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK(res.ok());
+    CHECK(res.problems == 0);
+    CHECK(res.checks > 8);
+  }
+}
+
+TEST_CASE("audit: corruption is detected", "[brick][audit]") {
+  Brick::Spec spec;
+  spec.nx = 3;
+  spec.ny = 3;
+  spec.nz = 2;
+  spec.tet_fraction = 0.4;
+
+  //! Topology only: the corruptions below are all in the maps
+  SOA_Idx::Audit_Options opts;
+  opts.geometry = false;
+  opts.masks = false;
+
+  SECTION("broken m:s>s2 involution") {
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(spec, mesh);
+    auto &s2s2 = mesh.ds->access_intv("m:s>s2");
+    s2s2[0] = static_cast<int>(s2s2.size()) - 1;
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("m:s>s2 pairing"));
+  }
+
+  SECTION("m:s>c1 pointing at the wrong corner") {
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(spec, mesh);
+    auto &s2c1 = mesh.ds->access_intv("m:s>c1");
+    s2c1[0] = s2c1[0] == 0 ? 1 : 0;
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("m:s>c1/c2 agree"));
+  }
+
+  SECTION("out-of-range map entry") {
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(spec, mesh);
+    mesh.ds->access_intv("m:s>z")[3] = mesh.zones.size() + 100;
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("side map ranges"));
+  }
+
+  SECTION("a point with no real corner starves gradzatp") {
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(spec, mesh);
+    /* Demote every corner at one point to a boundary corner.  This is what a
+       "a corner is a boundary corner whenever its point is on the boundary"
+       mask convention would produce, and it makes gradzatp's point_volume
+       zero at that point. */
+    auto const &c2p = mesh.ds->caccess_intv("m:c>p");
+    int const victim = c2p[0];
+    for (int c = 0; c < mesh.corners.local_size(); ++c)
+      if (c2p[c] == victim)
+        mesh.corners.mask[c] = -1;
+
+    SOA_Idx::Audit_Options mask_opts;
+    mask_opts.topology = false;
+    mask_opts.geometry = false;
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, mask_opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("divide by zero"));
   }
 }

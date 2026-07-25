@@ -17,8 +17,10 @@
 */
 
 #include "Ume/SOA_Idx_Mesh.hh"
+#include "Ume/mesh_audit.hh"
 #include "Ume/process_mgmt.hh"
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -31,8 +33,16 @@ using Mesh_Ptr = std::unique_ptr<Mesh>;
 std::vector<Mesh_Ptr> read_meshes(int argc, char *argv[]);
 
 int main(int argc, char *argv[]) {
+  bool audit_only{false};
+  if (argc > 1 && std::strcmp(argv[1], "--audit") == 0) {
+    audit_only = true;
+    /* Drop the flag so read_meshes() sees only file names. */
+    for (int i = 1; i < argc - 1; ++i)
+      argv[i] = argv[i + 1];
+    --argc;
+  }
   if (argc == 1) {
-    std::cerr << "Usage: ume_serial <ume file>+" << std::endl;
+    std::cerr << "Usage: ume_serial [--audit] <ume file>+" << std::endl;
     return 1;
   }
 
@@ -49,12 +59,28 @@ int main(int argc, char *argv[]) {
       Ume::Comm::Dummy_Transport comm;
       ranks[0]->comm = &comm;
 
-      [[maybe_unused]] auto const &test =
-          ranks[0]->ds->caccess_vec3v("corner_csurf");
-      [[maybe_unused]] auto const &test2 =
-          ranks[0]->ds->caccess_vec3v("side_surz");
-      [[maybe_unused]] auto const &test3 =
-          ranks[0]->ds->caccess_vec3v("point_norm");
+      if (audit_only) {
+        /* Note that only rank 0 gets a Transport, so this audits one
+           partition at a time; anything that depends on a gather/scatter is
+           not exercised here. */
+        Audit_Options opts;
+        opts.census = true;
+        std::cout << "\nAudit of rank " << ranks[0]->mype << '\n';
+        Audit_Result const res = audit(*ranks[0], std::cout, opts);
+        std::cout << "  " << res.checks - res.failed_checks << '/' << res.checks
+                  << " checks passed";
+        if (!res)
+          std::cout << ", " << res.problems << " problems";
+        std::cout << std::endl;
+        status = res ? 0 : 1;
+      } else {
+        [[maybe_unused]] auto const &test =
+            ranks[0]->ds->caccess_vec3v("corner_csurf");
+        [[maybe_unused]] auto const &test2 =
+            ranks[0]->ds->caccess_vec3v("side_surz");
+        [[maybe_unused]] auto const &test3 =
+            ranks[0]->ds->caccess_vec3v("point_norm");
+      }
     }
   }
   Ume::finalize();
