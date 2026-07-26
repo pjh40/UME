@@ -18,6 +18,22 @@
   produced it, so the same routine can be pointed at a generated brick or at a
   heritage DELFI dump.  Anything that depends on knowing the intended geometry
   (analytic volumes, expected normals) belongs to the generator instead.
+
+  The audit covers the whole connectivity of the mesh: every stored map
+  (`m:e>p*`, `m:f>z*`, `m:c>p`, `m:c>z`, `m:s>*`, `m:a>*`), every map the
+  library derives from them (`m:c>s`, `m:z>c`, `m:z>p`, `m:z>pz`, `m:p>zs`,
+  `m:p>rc`), the mask conventions those maps are read with, the derived
+  geometry, and the parallel bookkeeping in each `Entity`.
+
+  Two caveats apply to a mesh that came out of a decomposition:
+
+  - The audit sees one partition.  Ghost entities (mask 0) carry no local
+    connectivity, so checks that would have to follow a map into a neighboring
+    partition skip them.
+  - Where the file format does not fix a convention -- the direction in which
+    `m:s>s2` partners traverse their shared edge, the direction of the `m:s>s3`
+    ring around a face -- the audit infers the convention this mesh uses from
+    the majority of its sides and reports the ones that disagree.
 */
 
 #ifndef UME_MESH_AUDIT_HH
@@ -31,14 +47,23 @@ namespace SOA_Idx {
 
 //! Which groups of checks `audit` should run
 struct Audit_Options {
-  //! Connectivity: index ranges, `m:s>s2` pairing, side/corner agreement
+  /*! Connectivity: the index ranges of every stored map, and the relations
+      between them (`m:s>s2`/`s3`/`s4`/`s5`, side-corner-zone-face agreement,
+      the iota maps).  Index-range failures disable the `derived` and
+      `geometry` groups, which would otherwise index out of bounds. */
   bool topology{true};
   //! Mask invariants, including the ones `gradzatp`/`gradzatz` depend on
   bool masks{true};
+  /*! The maps the library derives from the stored ones (`m:c>s`, `m:z>c`,
+      `m:z>p`, `m:z>pz`, `m:p>zs`, `m:p>rc`), checked against their
+      definitions.  These are built on the host and need no Transport. */
+  bool derived{true};
   /*! Derived geometry: side volumes, zone volumes, corner surface closure,
       point normals.  This forces the lazy `VAR_*::init_()` derivations, so the
       mesh needs a Transport attached. */
   bool geometry{true};
+  //! The per-`Entity` parallel bookkeeping: comm types, ghost and copy records
+  bool parallel{true};
   //! Write a census of entity counts by mask category
   bool census{false};
   //! Maximum number of offending entities reported per failing check

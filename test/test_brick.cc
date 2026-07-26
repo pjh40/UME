@@ -65,6 +65,47 @@ std::vector<Brick::Spec> const &sweep() {
   return specs;
 }
 
+//! The mixed brick the audit tests corrupt
+Brick::Spec audit_spec() {
+  Brick::Spec spec;
+  spec.nx = 3;
+  spec.ny = 3;
+  spec.nz = 2;
+  spec.tet_fraction = 0.4;
+  return spec;
+}
+
+/*! Give `mesh` the iota entity the generator does not build: one tetrahedron
+    `(zone center, face center, edge center, point)` per side endpoint. */
+void add_iotas(Mesh &mesh) {
+  int const sll = mesh.sides.size();
+  mesh.iotas.resize(2 * sll, 2 * sll, 0);
+  std::fill(mesh.iotas.mask.begin(), mesh.iotas.mask.end(), short{1});
+  std::fill(mesh.iotas.comm_type.begin(), mesh.iotas.comm_type.end(),
+      static_cast<int>(SOA_Idx::Entity::INTERNAL));
+
+  auto const &s2z = mesh.ds->caccess_intv("m:s>z");
+  auto const &s2f = mesh.ds->caccess_intv("m:s>f");
+  auto const &s2e = mesh.ds->caccess_intv("m:s>e");
+  auto const &s2p1 = mesh.ds->caccess_intv("m:s>p1");
+  auto const &s2p2 = mesh.ds->caccess_intv("m:s>p2");
+  auto &a2z = mesh.ds->access_intv("m:a>z");
+  auto &a2f = mesh.ds->access_intv("m:a>f");
+  auto &a2e = mesh.ds->access_intv("m:a>e");
+  auto &a2p = mesh.ds->access_intv("m:a>p");
+  auto &a2s = mesh.ds->access_intv("m:a>s");
+
+  for (int s = 0; s < sll; ++s)
+    for (int h = 0; h < 2; ++h) {
+      int const a = 2 * s + h;
+      a2z[a] = s2z[s];
+      a2f[a] = s2f[s];
+      a2e[a] = s2e[s];
+      a2p[a] = h ? s2p2[s] : s2p1[s];
+      a2s[a] = s;
+    }
+}
+
 std::string describe(Brick::Spec const &s) {
   std::ostringstream os;
   os << s.nx << 'x' << s.ny << 'x' << s.nz << " tet_fraction=" << s.tet_fraction
@@ -338,29 +379,79 @@ TEST_CASE("audit: a generated brick is clean", "[brick][audit]") {
     INFO(report.str());
     CHECK(res.ok());
     CHECK(res.problems == 0);
-    CHECK(res.checks > 8);
+    CHECK(res.checks > 30);
+  }
+}
+
+TEST_CASE("audit: the iota maps are checked", "[brick][audit]") {
+  SECTION("a consistent set of iotas passes") {
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+    add_iotas(mesh);
+
+    std::ostringstream report;
+    SOA_Idx::Audit_Options opts;
+    opts.census = true;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK(res.ok());
+    CHECK_THAT(report.str(), Catch::Matchers::ContainsSubstring("iotas:"));
+  }
+
+  SECTION("an iota at a point its side does not touch") {
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+    add_iotas(mesh);
+    auto &a2p = mesh.ds->access_intv("m:a>p");
+    a2p[0] = a2p[1]; // both endpoints of side 0 are now the same point
+
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("iotas "
+                                           "per side"));
+  }
+
+  SECTION("an iota that disagrees with its side") {
+    Mesh mesh;
+    Brick::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+    add_iotas(mesh);
+    auto &a2f = mesh.ds->access_intv("m:a>f");
+    a2f[0] = a2f[0] == 0 ? 1 : 0;
+
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("m:a> maps agree with m:a>s"));
   }
 }
 
 TEST_CASE("audit: corruption is detected", "[brick][audit]") {
-  Brick::Spec spec;
-  spec.nx = 3;
-  spec.ny = 3;
-  spec.nz = 2;
-  spec.tet_fraction = 0.4;
+  Brick::Spec const spec = audit_spec();
 
-  //! Topology only: the corruptions below are all in the maps
+  Mesh mesh;
+  Brick::attach_serial_transport(mesh);
+  Brick::build(spec, mesh);
+
+  //! Topology only: most of the corruptions below are in the stored maps
   SOA_Idx::Audit_Options opts;
   opts.geometry = false;
   opts.masks = false;
+  opts.derived = false;
+  opts.parallel = false;
+
+  std::ostringstream report;
 
   SECTION("broken m:s>s2 involution") {
-    Mesh mesh;
-    Brick::attach_serial_transport(mesh);
-    Brick::build(spec, mesh);
     auto &s2s2 = mesh.ds->access_intv("m:s>s2");
     s2s2[0] = static_cast<int>(s2s2.size()) - 1;
-    std::ostringstream report;
     auto const res = SOA_Idx::audit(mesh, report, opts);
     INFO(report.str());
     CHECK_FALSE(res.ok());
@@ -369,12 +460,8 @@ TEST_CASE("audit: corruption is detected", "[brick][audit]") {
   }
 
   SECTION("m:s>c1 pointing at the wrong corner") {
-    Mesh mesh;
-    Brick::attach_serial_transport(mesh);
-    Brick::build(spec, mesh);
     auto &s2c1 = mesh.ds->access_intv("m:s>c1");
     s2c1[0] = s2c1[0] == 0 ? 1 : 0;
-    std::ostringstream report;
     auto const res = SOA_Idx::audit(mesh, report, opts);
     INFO(report.str());
     CHECK_FALSE(res.ok());
@@ -383,11 +470,7 @@ TEST_CASE("audit: corruption is detected", "[brick][audit]") {
   }
 
   SECTION("out-of-range map entry") {
-    Mesh mesh;
-    Brick::attach_serial_transport(mesh);
-    Brick::build(spec, mesh);
     mesh.ds->access_intv("m:s>z")[3] = mesh.zones.size() + 100;
-    std::ostringstream report;
     auto const res = SOA_Idx::audit(mesh, report, opts);
     INFO(report.str());
     CHECK_FALSE(res.ok());
@@ -395,10 +478,83 @@ TEST_CASE("audit: corruption is detected", "[brick][audit]") {
         report.str(), Catch::Matchers::ContainsSubstring("side map ranges"));
   }
 
+  SECTION("a side whose points are not the points of its edge") {
+    auto &s2e = mesh.ds->access_intv("m:s>e");
+    s2e[0] = s2e[0] == 0 ? 1 : 0;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("m:s>e agrees with m:s>p1/p2"));
+  }
+
+  SECTION("a face ring that does not close") {
+    auto &s2s3 = mesh.ds->access_intv("m:s>s3");
+    s2s3[0] = s2s3[s2s3[0]]; // skip a side of the ring
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(), Catch::Matchers::ContainsSubstring("m:s>s3"));
+  }
+
+  SECTION("a side that is its own m:s>s5") {
+    mesh.ds->access_intv("m:s>s5")[0] = 0;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("m:s>s5 pairing"));
+  }
+
+  SECTION("a face that does not name the zone of its sides") {
+    auto const &s2f = mesh.ds->caccess_intv("m:s>f");
+    auto &f2z1 = mesh.ds->access_intv("m:f>z1");
+    auto const &f2z2 = mesh.ds->caccess_intv("m:f>z2");
+    int const f = s2f[0];
+    int const other = mesh.zones.size() - 1;
+    f2z1[f] = (other == f2z2[f]) ? other - 1 : other;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("sides agree with m:f>z1/z2"));
+  }
+
+  SECTION("a stale derived map") {
+    /* Force the zone-to-corner map, then move a corner to another zone.  The
+       derived map is cached, so the operators would keep using the old one. */
+    [[maybe_unused]] auto const &z2c = mesh.ds->caccess_intrr("m:z>c");
+    auto &c2z = mesh.ds->access_intv("m:c>z");
+    c2z[0] = mesh.zones.size() - 1;
+
+    SOA_Idx::Audit_Options derived_opts;
+    derived_opts.topology = false;
+    derived_opts.masks = false;
+    derived_opts.geometry = false;
+    derived_opts.parallel = false;
+    auto const res = SOA_Idx::audit(mesh, report, derived_opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("m:z>c inverts m:c>z"));
+  }
+
+  /* A map that would index out of bounds has to disable the groups that would
+     do the indexing, rather than let them run into undefined behavior. */
+  SECTION("an unusable map disables the derived and geometry groups") {
+    mesh.ds->access_intv("m:c>p")[0] = -1;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("derived maps are index-safe"));
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("[derived] skipped"));
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("[geometry] skipped"));
+  }
+
   SECTION("a point with no real corner starves gradzatp") {
-    Mesh mesh;
-    Brick::attach_serial_transport(mesh);
-    Brick::build(spec, mesh);
     /* Demote every corner at one point to a boundary corner.  This is what a
        "a corner is a boundary corner whenever its point is on the boundary"
        mask convention would produce, and it makes gradzatp's point_volume
@@ -412,11 +568,74 @@ TEST_CASE("audit: corruption is detected", "[brick][audit]") {
     SOA_Idx::Audit_Options mask_opts;
     mask_opts.topology = false;
     mask_opts.geometry = false;
-    std::ostringstream report;
+    mask_opts.derived = false;
     auto const res = SOA_Idx::audit(mesh, report, mask_opts);
     INFO(report.str());
     CHECK_FALSE(res.ok());
     CHECK_THAT(
         report.str(), Catch::Matchers::ContainsSubstring("divide by zero"));
+  }
+
+  SECTION("a face with no live side starves fcoord") {
+    auto const &s2f = mesh.ds->caccess_intv("m:s>f");
+    int const victim = s2f[0];
+    for (int s = 0; s < mesh.sides.local_size(); ++s)
+      if (s2f[s] == victim)
+        mesh.sides.mask[s] = 0;
+
+    SOA_Idx::Audit_Options mask_opts;
+    mask_opts.topology = false;
+    mask_opts.geometry = false;
+    mask_opts.derived = false;
+    auto const res = SOA_Idx::audit(mesh, report, mask_opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("fcoord will divide by zero"));
+  }
+
+  SECTION("a live entity in the ghost index range") {
+    mesh.zones.mask[0] = 0;
+    SOA_Idx::Audit_Options mask_opts;
+    mask_opts.topology = false;
+    mask_opts.geometry = false;
+    mask_opts.derived = false;
+    auto const res = SOA_Idx::audit(mesh, report, mask_opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("below local_size"));
+  }
+
+  SECTION("a copy record that names this rank") {
+    mesh.points.cpy_idx.push_back(0);
+    mesh.points.src_pe.push_back(mesh.mype);
+    mesh.points.src_idx.push_back(0);
+    mesh.points.ghost_mask.push_back(0);
+
+    SOA_Idx::Audit_Options comm_opts;
+    comm_opts.topology = false;
+    comm_opts.masks = false;
+    comm_opts.geometry = false;
+    comm_opts.derived = false;
+    auto const res = SOA_Idx::audit(mesh, report, comm_opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("copy records"));
+  }
+
+  SECTION("an invalid communication type") {
+    mesh.sides.comm_type[0] = 42;
+
+    SOA_Idx::Audit_Options comm_opts;
+    comm_opts.topology = false;
+    comm_opts.masks = false;
+    comm_opts.geometry = false;
+    comm_opts.derived = false;
+    auto const res = SOA_Idx::audit(mesh, report, comm_opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(), Catch::Matchers::ContainsSubstring("comm types"));
   }
 }

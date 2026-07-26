@@ -250,28 +250,67 @@ Ume::SOA_Idx::Audit_Result const res = Ume::SOA_Idx::audit(mesh, std::cout, opts
 if (!res) { /* res.failed_checks, res.problems */ }
 ```
 
-`Audit_Options` switches the groups (`topology`, `masks`, `geometry`,
-`census`) and caps how many offending entities each check prints.
+`Audit_Options` switches the groups (`topology`, `masks`, `derived`,
+`geometry`, `parallel`, `census`) and caps how many offending entities each
+check prints.  Together they cover every map the mesh carries: the stored ones
+(`m:e>p*`, `m:f>z*`, `m:c>p`, `m:c>z`, `m:s>*`, `m:a>*`), the ones the library
+derives from them (`m:c>s`, `m:z>c`, `m:z>p`, `m:z>pz`, `m:p>zs`, `m:p>rc`),
+the masks they are read with, and the parallel bookkeeping in each `Entity`.
 
-*Topology* — every map entry in range; no side with `p1 == p2`; `m:s>s2` is a
-self-inverse pairing between sides that agree on `(face, edge)`; every
-`(face, edge)` carries exactly two sides; `m:s>c1`/`c2` resolve to corners of
-the side's own zone at `p1`/`p2`; no two corners of a zone at the same point;
-a ghost corner's `m:c>z` is either out of range or names a ghost zone, never a
-real one.
+*Topology* — every map entry in range, including the two stronger conditions
+the lazy derivations need: `VAR_zcoord` and `VAR_fcoord` accumulate into
+arrays of *local* zones and faces without bounds checking, and the ragged-map
+derivations index with `std::vector::at`, which throws rather than ignores a
+negative index at a ghost.  Then the relations between the maps:
 
-*Masks* — every `cmask >= 1` corner belongs to a `zmask >= 1` zone; every real
-point owns at least one `cmask >= 1` corner, without which `gradzatp` divides
-by a zero `point_volume`.
+| what | invariant |
+|---|---|
+| `m:s>p1`/`p2` | distinct, and the endpoints of the side's own `m:s>e` |
+| `m:s>s2` | a self-inverse pairing of sides agreeing on `(face, edge)`, traversing that edge in opposite directions; exactly two sides per `(face, edge)` |
+| `m:s>s3`/`s4` | mutually inverse; a single closed directed ring per `(zone, face)`, covering every side of that face of that zone |
+| `m:s>s5` | a self-inverse pairing within a zone, on one edge and two faces; a real zone meets each of its edges on exactly two faces |
+| `m:s>c1`/`c2` | corners of the side's own zone, at `p1` and `p2` |
+| `m:s>f`, `m:f>z*` | a side's zone is one of the two its face names; a face does not name the same zone twice |
+| `m:c>p`, `m:c>z` | no two corners of a zone at the same point; a real zone has at least four corners on at least four faces; a ghost corner's zone is out of range or itself a ghost, never real |
+| `m:a>*` | each iota copies the zone, face and edge of its `m:a>s`, sits at one of that side's two endpoints, and shares the side with at most one other iota, at the other endpoint |
 
-*Geometry* — every real `side_vol > 0`; every real zone has positive volume;
-`corner_csurf` closes (sums to zero) over each zone, which is what makes
-`gradzatp` reproduce a constant field; `point_norm` is a unit vector at
+*Masks* — every `cmask >= 1` corner belongs to a `zmask >= 1` zone, and every
+`smask > 0` side likewise; a non-ghost side references nothing that is a ghost;
+ghosts are exactly the entities at or above `local_size()`; a side outside the
+real mesh has its face, edge and points marked as boundary too, and its
+`m:s>s2` is a real side, which is what `VAR_point_norm` follows.  Three checks
+name the division that fails without them: every real point owns a
+`cmask >= 1` corner (`gradzatp`'s `point_volume`), every non-ghost zone owns a
+non-ghost corner (`zcoord`), and every non-ghost face owns a non-ghost side
+(`fcoord`).
+
+*Derived* — each derived map against the definition its `VAR_*::init_()` uses:
+`m:c>s` inverts `m:s>c1`/`c2`, `m:z>c` inverts `m:c>z`, `m:z>p` and `m:p>zs`
+are the two readings of `(m:c>p, m:c>z)`, `m:p>rc` keeps the `cmask >= 1`
+corners at each point, and `m:z>pz` is the set of zones sharing a point with a
+zone.  These are cached on first use, so this is also what catches a derived
+map that was built before a map it came from changed.
+
+*Geometry* — coordinates are finite and no edge has zero length; every real
+`side_vol > 0` and every real `corner_vol > 0`; every real zone has positive
+volume, and the same volume whether it is added up over its sides or over its
+corners; `corner_csurf` closes (sums to zero) over each zone, which is what
+makes `gradzatp` reproduce a constant field, and `side_surz` closes over the
+surface of each real zone, which is what a face ring traversed the wrong way
+about one of its two zones breaks; `point_norm` is a unit vector at
 `pmask < 0` points and zero elsewhere.  Per-zone quantities are accumulated
 through `m:c>z` rather than `m:z>c`, so the geometry checks do not depend on
 how the zone-to-corner map is filtered.
 
-*Census* (opt-in) — entity counts by mask category, plus two summary lines:
+*Parallel* — the `Entity` communication records: matching array lengths, comm
+types in range and `GHOST` above `local_size()`, copy records naming a local
+index and a rank other than this one, and neighbor lists whose elements are
+local indices.  Only one partition is present, so this is what can be checked
+without the others.
+
+*Census* (opt-in) — entity counts by mask category, the number of entities
+nothing references, the corner counts of the real zones, and two summary
+lines:
 
 ```
   local zones with zmask < 1: 99 (0 owning cmask >= 1 corners)
@@ -292,13 +331,31 @@ knows: every real zone's `corner_vol` sums to `dx*dy*dz` (8 corners) or
 exactly the outward axis normal in the interior of a brick face; `pmask` agrees
 with the lattice.
 
+Two things are worth knowing when the audit is pointed at a partition of a
+decomposed mesh rather than at a whole one.  First, it sees only that
+partition: ghost entities carry no local connectivity, so a check that would
+have to follow a map into a neighboring partition skips them.  Second, where
+the file format does not fix a convention — the direction in which `m:s>s2`
+partners traverse their shared edge, the direction of the `m:s>s3` ring around
+a face — the audit takes the convention from the majority of the mesh's own
+sides and reports the ones that disagree, rather than imposing the
+generator's.
+
 The audit is tested in both directions.  `[audit]` in `test/test_brick.cc`
-checks that generated meshes come out clean, and that a broken `s2` link, a
-mis-pointed `c1`, an out-of-range `m:s>z` and a point stripped of its real
-corners are each caught with the expected message.
+checks that generated meshes come out clean, with and without iotas, and that
+a broken `s2` link, a mis-pointed `c1`, an out-of-range `m:s>z`, a side whose
+points are not those of its edge, a face ring that does not close, a
+self-referential `s5`, a face that disowns the zone of its sides, an iota that
+disagrees with its side, a stale `m:z>c`, a point stripped of its real
+corners, a face left with no live side, a live entity in the ghost index range
+and a copy record naming its own rank are each caught with the expected
+message.  A map that would index out of bounds is expected to *disable* the
+`derived` and `geometry` groups, which would otherwise run into undefined
+behavior; the report says which groups it skipped and why.
 
 `ume_serial --audit <file>+` runs the audit on a stored mesh and exits nonzero
-if anything fails.
+if anything fails.  It works under `UME_SERIAL`, which is the configuration in
+which the audit's own accumulations are deterministic.
 
 ## 7. Gradient accuracy on a mixed mesh
 
