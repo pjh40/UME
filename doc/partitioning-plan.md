@@ -365,12 +365,14 @@ Four notes:
   brick, so nothing needed relaxing — but that is a measurement, not a
   guarantee, and a mesh with a strong periodic weight pattern could break it.
 
-One pre-existing defect found and left alone, for its own commit: the doc
-comment on `Metrics::interior_faces` says "whose two zones are on one rank",
+One pre-existing defect found, fixed in its own commit afterwards: the doc
+comment on `Metrics::interior_faces` said "whose two zones are on one rank",
 but `face_cuts` sets `interior` on every face with a real zone on each side and
-`cut` on the subset of those that are cut. The number and `report()` are right;
-only the comment is wrong, and it is the kind of wrong that costs whoever reads
-it next an hour.
+`cut` on the subset of those that are cut. The number, `report()` and the CSV
+were right; only the comment was wrong. It cost a failing test to find, and the
+test it cost is the one that now pins the property the comment got backwards —
+`interior_faces` is the same for every method, because it is the mesh's
+denominator rather than the decomposition's numerator.
 
 Next: `bfs`.
 

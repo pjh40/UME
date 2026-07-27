@@ -107,9 +107,11 @@ struct Metrics {
   int nparts{0};
   std::array<Kind_Metrics, NKINDS> kinds;
 
-  //! Faces with a real zone on each side, whose two zones are on one rank
+  /*! Faces with a real zone on each side, cut or not.  A property of the mesh
+      rather than of the decomposition, so it is the denominator the methods
+      compete over; `report` prints `cut_faces` "of" this. */
   long interior_faces{0};
-  //! Faces with a real zone on each side, on different ranks
+  //! Those interior faces whose two zones are on different ranks
   long cut_faces{0};
   //! Distinct points on the cut faces, summed -- the `FACE_POINTS` edge cut
   long cut_face_points{0};
