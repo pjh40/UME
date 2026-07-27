@@ -789,3 +789,13 @@ foreach(rank 00000 00001 00002)
   set_tests_properties(partition_audit_${rank} PROPERTIES
     FIXTURES_REQUIRED parts)
 endforeach()
+
+# --check is the one thing neither the audit nor the round trip can do: it
+# needs every rank at once.  `linear` is used rather than `slab-x` because
+# contiguous ranges of zone index cut far more faces, so the cross-rank
+# pairing it exercises is much wider.
+add_test(NAME partition_cross_rank_check
+  COMMAND ume_partition --ranks 4 --method linear --check --no-write brick.ume
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_cross_rank_check PROPERTIES
+  FIXTURES_REQUIRED brick)

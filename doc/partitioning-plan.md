@@ -104,11 +104,37 @@ exactly that up with CTest fixtures.
 `--metrics`/`--comm-matrix`/`--check` are deliberately absent; they land with
 the code behind them in phase 2.
 
-**Next: Phase 2, commit 10** — `partition_check.hh/.cc` and
-`ume_partition --check`. Phase 1's commit 9 (the audit sweep over
-`test_brick.cc` specs) landed early, inside commit 7: `test_partition.cc`
-already sweeps three specs × four methods × N ∈ {1,2,3,4,7,8} through the full
-`mesh_audit`, plus a 1×1×1 brick split eight ways.
+Phase 1's commit 9 (the audit sweep over `test_brick.cc` specs) landed early,
+inside commit 7: `test_partition.cc` already sweeps three specs × four methods
+× N ∈ {1,2,3,4,7,8} through the full `mesh_audit`, plus a 1×1×1 brick split
+eight ways.
+
+**Phase 2, commit 10 complete.** `partition_check.hh/.cc` — seven cross-rank
+checks, `ume_partition --check`, six Catch2 tests and one CTest. All three
+trees green at 100/100.
+
+Three notes:
+
+- **An entity is identified by a *tuple* of point sets, not one.** A side's
+  two endpoints do not name it: the two sides of a zone that meet along an
+  edge, one on each of the two faces sharing it, have the same pair. Ghost
+  corners have the same problem — two ghost zones meeting at a local point
+  give it two. So the signature is `(own points, face points, zone points)`,
+  compared component by component. The mixed brick really does contain such a
+  side pair, and `two sides on one edge are told apart` swaps exactly one, so
+  the weaker key is a failing test rather than a latent hole.
+- Derived geometry (`fcoord`, `zcoord`) is exactly the wrong thing to compare
+  with. It is filled on ghosts by a scatter that has not happened in a
+  `Dummy_Transport` process, so it would compare garbage against a real value.
+  Stored maps and `pcoord` are bit-identical across ranks because `extract`
+  copies them, so every comparison here is exact and no tolerance appears.
+- A ghost is compared by *containment*, not equality: a rank imports only the
+  part of a ghost zone touching points it already holds. Ghost corners and
+  ghost sides still match exactly on their own points; it is the zone
+  component that is a proper subset.
+
+**Next: Phase 2, commit 11** — audit every rank in `ume_serial`, then run
+`check_partitions` over them.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

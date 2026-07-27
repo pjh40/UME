@@ -24,12 +24,15 @@
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Graph.hh"
 #include "Ume/mesh_audit.hh"
+#include "Ume/partition_check.hh"
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <iterator>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <sstream>
+#include <string>
 
 using namespace Ume;
 using Ume::SOA_Idx::Mesh;
@@ -708,4 +711,218 @@ TEST_CASE("extract: degenerate part counts still produce valid meshes",
     }
     CHECK(empty == nparts - 1);
   }
+}
+
+/* ---------------------------- cross-rank checks --------------------------- */
+
+namespace {
+
+//! Extract every rank of `d`.  A Mesh cannot be moved, so they are held by
+//! pointer -- which is also the shape `check_partitions` wants them in.
+std::vector<std::unique_ptr<Mesh>> extract_all(
+    Mesh const &mesh, Part::Decomposition const &d) {
+  std::vector<std::unique_ptr<Mesh>> parts;
+  for (int r = 0; r < d.nparts; ++r) {
+    parts.push_back(std::make_unique<Mesh>());
+    Ume::attach_serial_transport(*parts.back());
+    Part::extract(mesh, d, r, *parts.back());
+  }
+  return parts;
+}
+
+std::vector<Mesh const *> view(
+    std::vector<std::unique_ptr<Mesh>> const &parts) {
+  std::vector<Mesh const *> v;
+  v.reserve(parts.size());
+  for (auto const &p : parts)
+    v.push_back(p.get());
+  return v;
+}
+
+//! A three-way split of the mixed brick, for the tests that break one on purpose
+struct Split {
+  Mesh mesh;
+  std::vector<std::unique_ptr<Mesh>> parts;
+  Split() {
+    Case const c{mixed_spec(), "slab-x", 3};
+    Part::Decomposition const d = decompose(mesh, c);
+    parts = extract_all(mesh, d);
+  }
+  //! Run the checks, leaving what they said in `last_report` for the caller
+  Part::Check_Result check() const {
+    std::ostringstream report;
+    Part::Check_Result const res =
+        Part::check_partitions(mesh, view(parts), report);
+    last_report = report.str();
+    return res;
+  }
+  mutable std::string last_report;
+};
+
+} // namespace
+
+TEST_CASE("check: the ranks of a decomposition agree with each other",
+    "[partition]") {
+  for (Case const &c : cases()) {
+    INFO(c.describe());
+    Mesh mesh;
+    Part::Decomposition const d = decompose(mesh, c);
+    auto const parts = extract_all(mesh, d);
+
+    std::ostringstream report;
+    Part::Check_Result const res =
+        Part::check_partitions(mesh, view(parts), report);
+    INFO(report.str());
+    CHECK(res.ok());
+    CHECK(res.problems == 0);
+    CHECK(res.checks > 0);
+  }
+}
+
+TEST_CASE("check: the ranks alone are checkable without the serial mesh",
+    "[partition]") {
+  /* This is the form `ume_serial` gets: N files and nothing to compare them
+     against but each other, so the reassembly checks do not run. */
+  Case const c{mixed_spec(), "slab-y", 4};
+  Mesh mesh;
+  Part::Decomposition const d = decompose(mesh, c);
+  auto const parts = extract_all(mesh, d);
+
+  std::ostringstream with, without;
+  Part::Check_Result const a = Part::check_partitions(mesh, view(parts), with);
+  Part::Check_Result const b = Part::check_partitions(view(parts), without);
+  INFO(with.str() << without.str());
+  CHECK(a.ok());
+  CHECK(b.ok());
+  CHECK(b.checks < a.checks);
+}
+
+TEST_CASE("check: a permuted copy list is caught", "[partition]") {
+  /* The failure this file exists for.  Swapping two entries of one copy list
+     leaves every length, comm type and mask right, and leaves each rank
+     passing `mesh_audit` on its own -- but the two ranks now disagree about
+     which entity position 0 of the buffer holds, so every gather would put
+     the values on the wrong points.  Nothing local can see it. */
+  Split s;
+  REQUIRE(s.check().ok());
+
+  Ume::Comm::Neighbor *victim{nullptr};
+  for (auto const &p : s.parts)
+    for (auto &nbr : p->points.myCpys)
+      if (victim == nullptr && nbr.elements.size() >= 2)
+        victim = &nbr;
+  REQUIRE(victim != nullptr);
+  std::swap(victim->elements[0], victim->elements[1]);
+
+  Part::Check_Result const res = s.check();
+  INFO(s.last_report);
+  CHECK(!res.ok());
+  CHECK(res.failed_checks == 1);
+  CHECK(res.problems >= 2);
+}
+
+TEST_CASE("check: a copy list that outgrows its source list is caught",
+    "[partition]") {
+  Split s;
+  REQUIRE(s.check().ok());
+
+  Ume::Comm::Neighbor *victim{nullptr};
+  for (auto const &p : s.parts)
+    for (auto &nbr : p->points.mySrcs)
+      if (victim == nullptr && !nbr.elements.empty())
+        victim = &nbr;
+  REQUIRE(victim != nullptr);
+  victim->elements.pop_back();
+
+  Part::Check_Result const res = s.check();
+  INFO(s.last_report);
+  CHECK(!res.ok());
+  CHECK(res.failed_checks == 1);
+}
+
+TEST_CASE("check: a ghost pointed at the wrong source is caught",
+    "[partition]") {
+  Split s;
+  REQUIRE(s.check().ok());
+
+  bool moved{false};
+  for (auto const &p : s.parts) {
+    if (p->zones.ghost_local_size() == 0)
+      continue;
+    int const pe = p->zones.src_pe[0];
+    int const n = s.parts[static_cast<std::size_t>(pe)]->zones.local_size();
+    REQUIRE(n > 1);
+    p->zones.src_idx[0] = (p->zones.src_idx[0] + 1) % n;
+    moved = true;
+    break;
+  }
+  REQUIRE(moved);
+
+  Part::Check_Result const res = s.check();
+  INFO(s.last_report);
+  CHECK(!res.ok());
+  CHECK(res.failed_checks == 1);
+}
+
+TEST_CASE("check: a zone no rank claims is caught", "[partition]") {
+  /* Counting is not enough on its own, so both reassembly checks fire: one
+     rank fewer zone in the total, and one zone of the serial mesh that
+     nothing covers. */
+  Split s;
+  REQUIRE(s.check().ok());
+
+  bool disowned{false};
+  auto &zones = s.parts.front()->zones;
+  for (int i = 0; i < zones.local_size(); ++i)
+    if (zones.comm_type[static_cast<std::size_t>(i)] ==
+        SOA_Idx::Entity::INTERNAL) {
+      zones.comm_type[static_cast<std::size_t>(i)] = SOA_Idx::Entity::COPY;
+      disowned = true;
+      break;
+    }
+  REQUIRE(disowned);
+
+  Part::Check_Result const res = s.check();
+  INFO(s.last_report);
+  CHECK(!res.ok());
+  CHECK(res.failed_checks == 2);
+}
+
+TEST_CASE("check: two sides on one edge are told apart", "[partition]") {
+  /* A side's two endpoints do not name it: the two sides of a zone that meet
+     along an edge, one on each of the two faces sharing that edge, have the
+     same pair.  Swapping such a pair in a copy list is the permutation that a
+     coordinate comparison is most likely to wave through, so it is the one
+     worth pinning down. */
+  Split s;
+  REQUIRE(s.check().ok());
+
+  Ume::Comm::Neighbor *victim{nullptr};
+  std::size_t a{0}, b{0};
+  for (auto const &p : s.parts) {
+    auto const &s2p1 = p->ds->caccess_intv("m:s>p1");
+    auto const &s2p2 = p->ds->caccess_intv("m:s>p2");
+    auto ends = [&](int i) {
+      auto const u = static_cast<std::size_t>(i);
+      return std::minmax(s2p1[u], s2p2[u]);
+    };
+    for (auto &nbr : p->sides.myCpys)
+      for (std::size_t i = 0; i < nbr.elements.size() && victim == nullptr; ++i)
+        for (std::size_t j = i + 1; j < nbr.elements.size(); ++j)
+          if (ends(nbr.elements[i]) == ends(nbr.elements[j])) {
+            victim = &nbr;
+            a = i;
+            b = j;
+            break;
+          }
+    if (victim != nullptr)
+      break;
+  }
+  REQUIRE(victim != nullptr);
+  std::swap(victim->elements[a], victim->elements[b]);
+
+  Part::Check_Result const res = s.check();
+  INFO(s.last_report);
+  CHECK(!res.ok());
+  CHECK(res.failed_checks == 1);
 }

@@ -37,6 +37,7 @@ set(UME_INCLUDE_FILES
   face_area.hh
   gradient.hh
   mesh_audit.hh
+  partition_check.hh
   renumbering.hh
   soa_idx_helpers.hh
   utils.hh
@@ -69,6 +70,7 @@ add_library(Ume
   face_area.cc
   gradient.cc
   mesh_audit.cc
+  partition_check.cc
   renumbering.cc
   utils.cc
   process_mgmt.cc

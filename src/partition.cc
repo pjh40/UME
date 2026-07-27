@@ -20,12 +20,14 @@
 #include "Ume/Decompose.hh"
 #include "Ume/Partition.hh"
 #include "Ume/mesh_audit.hh"
+#include "Ume/partition_check.hh"
 #include "Ume/process_mgmt.hh"
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -53,6 +55,8 @@ Options:
   --zone-map FILE      Read a zone->part map instead of running a method
   --dump-zone-map FILE Write the zone->part map the method produced
   --audit              Run mesh_audit on each partition before writing
+  --check              Check the partitions against each other afterwards.
+                       Unlike --audit, this holds every partition in memory.
   --no-write           Do everything except write the files
   -h, --help           This message
 )";
@@ -118,7 +122,7 @@ int main(int argc, char *argv[]) {
   Part::Options opt;
   Part::Decompose_Options dopt;
   std::string method{"slab"}, zone_map_in, zone_map_out;
-  bool do_audit{false}, do_write{true}, have_ranks{false};
+  bool do_audit{false}, do_check{false}, do_write{true}, have_ranks{false};
   std::vector<std::string_view> positional;
 
   for (int i = 1; i < argc; ++i) {
@@ -187,6 +191,8 @@ int main(int argc, char *argv[]) {
       zone_map_out = next("--dump-zone-map");
     } else if (arg == "--audit") {
       do_audit = true;
+    } else if (arg == "--check") {
+      do_check = true;
     } else if (arg == "--no-write") {
       do_write = false;
     } else if (arg.starts_with("-") && arg.size() > 1) {
@@ -274,10 +280,13 @@ int main(int argc, char *argv[]) {
       std::cerr << "ume_partition: warning: " << empty << " of " << d.nparts
                 << " parts have no zones; the mesh has fewer zones than that\n";
 
-    /* One Mesh alive at a time: the layouts already know everything about the
-       other ranks that building this one needs. */
+    /* One Mesh alive at a time, unless --check asks to compare them: the
+       layouts already know everything about the other ranks that building
+       this one needs.  A Mesh cannot be moved, so they are held by pointer. */
+    std::vector<std::unique_ptr<Mesh>> kept;
     for (int pe = 0; pe < d.nparts; ++pe) {
-      Mesh part;
+      auto held = std::make_unique<Mesh>();
+      Mesh &part = *held;
       Ume::attach_serial_transport(part);
       Part::extract(mesh, d, pe, part);
 
@@ -294,6 +303,8 @@ int main(int argc, char *argv[]) {
           status = 1;
         }
       }
+      if (do_check)
+        kept.push_back(std::move(held));
 
       if (do_write && status == 0) {
         std::string const path = rank_file(outbase, pe);
@@ -319,6 +330,27 @@ int main(int argc, char *argv[]) {
           break;
         }
       }
+    }
+
+    /* The audit above sees one partition and can only ask whether its
+       bookkeeping is well formed.  This is the check that the ranks agree
+       with each other, and that between them they are still the input. */
+    if (do_check && status == 0) {
+      std::vector<Mesh const *> ranks;
+      ranks.reserve(kept.size());
+      for (auto const &m : kept)
+        ranks.push_back(m.get());
+
+      std::cout << "Cross-rank check\n";
+      Part::Check_Result const res =
+          Part::check_partitions(mesh, ranks, std::cout);
+      std::cout << "  " << res.checks - res.failed_checks << '/' << res.checks
+                << " checks passed";
+      if (!res)
+        std::cout << ", " << res.problems << " problems";
+      std::cout << std::endl;
+      if (!res)
+        status = 5;
     }
   }
   Ume::finalize();
