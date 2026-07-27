@@ -756,3 +756,36 @@ elseif(UME_MULTIRANK_TESTS)
     "UME_MULTIRANK_TESTS needs USE_MPI=ON and an MPI launcher; "
     "MPIEXEC_EXECUTABLE is \"${MPIEXEC_EXECUTABLE}\"")
 endif()
+
+#############################################################################
+# End-to-end driver tests
+#############################################################################
+# The Catch2 sweep covers the decomposition itself; what these add is the file
+# format seen from both ends, which no in-process test touches: gen_brick
+# writes a mesh, ume_partition splits it and reads its own output back, and
+# ume_serial audits the files as an unrelated program.
+
+set(PARTITION_WORKDIR ${CMAKE_CURRENT_BINARY_DIR}/partition_e2e)
+file(MAKE_DIRECTORY ${PARTITION_WORKDIR})
+
+add_test(NAME partition_list_methods
+  COMMAND ume_partition --list-methods)
+
+add_test(NAME partition_gen_brick
+  COMMAND gen_brick --tet-fraction 0.4 4 3 2 brick.ume
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_gen_brick PROPERTIES FIXTURES_SETUP brick)
+
+add_test(NAME partition_split
+  COMMAND ume_partition --ranks 3 --method slab-x --audit brick.ume part
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_split PROPERTIES
+  FIXTURES_REQUIRED brick FIXTURES_SETUP parts)
+
+foreach(rank 00000 00001 00002)
+  add_test(NAME partition_audit_${rank}
+    COMMAND ume_serial --audit part.${rank}.ume
+    WORKING_DIRECTORY ${PARTITION_WORKDIR})
+  set_tests_properties(partition_audit_${rank} PROPERTIES
+    FIXTURES_REQUIRED parts)
+endforeach()

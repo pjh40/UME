@@ -92,8 +92,23 @@ Notes on `extract` itself:
   allowed to dangle; both become self-references. Every other map is required
   to resolve, and `Renumber::require` throws if it does not.
 
-**Next: Phase 1, commit 8** — `src/partition.cc`, the `ume_partition` driver:
-`--ranks --method --list-methods --audit --no-write`.
+**Phase 1, commit 8 complete.** `src/partition.cc` → `ume_partition`, with
+`--ranks --method --list-methods --vertex-weight --edge-weight --imbalance
+--seed --ghosts --owner --zone-map --dump-zone-map --audit --no-write`, plus
+end-to-end CTests. All three trees green at 92/92.
+
+`gen_brick → ume_partition --audit → ume_serial --audit` on the written files
+is the first thing to prove the format works from both ends. The CTests wire
+exactly that up with CTest fixtures.
+
+`--metrics`/`--comm-matrix`/`--check` are deliberately absent; they land with
+the code behind them in phase 2.
+
+**Next: Phase 2, commit 10** — `partition_check.hh/.cc` and
+`ume_partition --check`. Phase 1's commit 9 (the audit sweep over
+`test_brick.cc` specs) landed early, inside commit 7: `test_partition.cc`
+already sweeps three specs × four methods × N ∈ {1,2,3,4,7,8} through the full
+`mesh_audit`, plus a 1×1×1 brick split eight ways.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

@@ -20,6 +20,13 @@ set_target_properties(gen_brick PROPERTIES
   COMPILE_OPTIONS "${WARNING_FLAGS}"
   )
 
+add_executable(ume_partition partition.cc)
+target_link_libraries(ume_partition Ume)
+set_target_properties(ume_partition PROPERTIES
+  COMPILE_DEFINITIONS "${COMMON_COMPILE_DEFINITIONS}"
+  COMPILE_OPTIONS "${WARNING_FLAGS}"
+  )
+
 add_executable(scale_mesh scale_mesh.cc)
 target_link_libraries(scale_mesh Ume)
 set_target_properties(scale_mesh PROPERTIES
