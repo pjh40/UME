@@ -23,6 +23,7 @@
 #include "Ume/Decompose.hh"
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Graph.hh"
+#include "Ume/Partition_Metrics.hh"
 #include "Ume/mesh_audit.hh"
 #include "Ume/partition_check.hh"
 #include <algorithm>
@@ -30,6 +31,7 @@
 #include <iterator>
 #include <memory>
 #include <numeric>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -925,4 +927,195 @@ TEST_CASE("check: two sides on one edge are told apart", "[partition]") {
   INFO(s.last_report);
   CHECK(!res.ok());
   CHECK(res.failed_checks == 1);
+}
+
+/* -------------------------------- metrics --------------------------------- */
+
+namespace {
+
+SOA_Idx::Entity const &entity_of(Mesh const &m, int const kind) {
+  switch (kind) {
+  case Part::POINT:
+    return m.points;
+  case Part::EDGE:
+    return m.edges;
+  case Part::FACE:
+    return m.faces;
+  case Part::ZONE:
+    return m.zones;
+  case Part::CORNER:
+    return m.corners;
+  case Part::SIDE:
+    return m.sides;
+  default:
+    return m.iotas;
+  }
+}
+
+long elements_in(Ume::Comm::Neighbors const &n) {
+  long total = 0;
+  for (auto const &nbr : n)
+    total += static_cast<long>(nbr.elements.size());
+  return total;
+}
+
+//! z % nparts over the real zones: the worst zone map there is
+Part::Zone_Map scattered(Mesh const &mesh, int nparts) {
+  Part::Zone_Map z2r(static_cast<std::size_t>(mesh.zones.size()), -1);
+  int next = 0;
+  for (int z = 0; z < mesh.zones.size(); ++z)
+    if (mesh.zones.mask[z] >= 1)
+      z2r[static_cast<std::size_t>(z)] = next++ % nparts;
+  return z2r;
+}
+
+} // namespace
+
+TEST_CASE("metrics: one rank costs nothing", "[partition]") {
+  for (Case const &c : cases()) {
+    if (c.nparts != 1)
+      continue;
+    INFO(c.describe());
+    Mesh mesh;
+    Part::Decomposition const d = decompose(mesh, c);
+    Part::Metrics const m = Part::measure(mesh, d);
+
+    REQUIRE(m.nparts == 1);
+    for (int k = 0; k < Part::NKINDS; ++k) {
+      INFO(Part::kind_name(k));
+      auto const &km = m.kinds[static_cast<std::size_t>(k)];
+      CHECK(km.local.front() == km.serial);
+      CHECK(km.total_ghost == 0);
+      CHECK(km.duplicated == 0);
+      CHECK(km.src_elems.front() == 0);
+      CHECK(km.cpy_elems.front() == 0);
+      CHECK(km.max_neighbors == 0);
+      CHECK(km.imbalance == (km.total_load > 0 ? 1.0 : 0.0));
+    }
+    CHECK(m.cut_faces == 0);
+    CHECK(m.cut_face_points == 0);
+    CHECK(m.interior_faces > 0);
+    CHECK(m.max_neighbors == 0);
+    CHECK(m.total_comm_elems() == 0);
+    CHECK(m.max_surface_to_volume == 0.0);
+  }
+}
+
+TEST_CASE("metrics: the numbers are what extract produces", "[partition]") {
+  /* The whole point of measuring the `Decomposition` rather than the meshes
+     is that a method sweep never has to build them.  That is only worth
+     anything if the two agree exactly, so every counter is pinned against the
+     mesh it predicts -- including the send matrix, which is the one a reader
+     is most likely to take on trust. */
+  for (Case const &c : cases()) {
+    INFO(c.describe());
+    Mesh mesh;
+    Part::Decomposition const d = decompose(mesh, c);
+    Part::Metrics const m = Part::measure(mesh, d);
+    auto const parts = extract_all(mesh, d);
+
+    REQUIRE(m.nparts == d.nparts);
+    std::vector<long> sends(
+        static_cast<std::size_t>(d.nparts) * static_cast<std::size_t>(d.nparts),
+        0);
+
+    for (int pe = 0; pe < d.nparts; ++pe) {
+      auto const u = static_cast<std::size_t>(pe);
+      INFO("rank " << pe);
+      std::set<int> all_nbrs;
+      for (int k = 0; k < Part::NKINDS; ++k) {
+        INFO(Part::kind_name(k));
+        auto const &km = m.kinds[static_cast<std::size_t>(k)];
+        SOA_Idx::Entity const &e = entity_of(*parts[u], k);
+
+        CHECK(km.local[u] == e.local_size());
+        CHECK(km.ghost[u] == e.ghost_local_size());
+        CHECK(km.src_elems[u] == elements_in(e.mySrcs));
+        CHECK(km.cpy_elems[u] == elements_in(e.myCpys));
+
+        std::set<int> nbrs;
+        for (auto const *n : {&e.mySrcs, &e.myCpys})
+          for (auto const &nbr : *n) {
+            nbrs.insert(nbr.pe);
+            all_nbrs.insert(nbr.pe);
+          }
+        CHECK(km.neighbors[u] == static_cast<int>(nbrs.size()));
+
+        for (auto const &nbr : e.mySrcs)
+          sends[u * static_cast<std::size_t>(d.nparts) +
+              static_cast<std::size_t>(nbr.pe)] +=
+              static_cast<long>(nbr.elements.size());
+      }
+      CHECK(m.neighbors[u] == static_cast<int>(all_nbrs.size()));
+    }
+    CHECK(m.comm_matrix == sends);
+  }
+}
+
+TEST_CASE(
+    "metrics: a scattered zone map costs more than a slab", "[partition]") {
+  /* Reporting these numbers is only useful if they can tell a good
+     decomposition from a bad one, so here is the worst one available.  Every
+     face of the mesh is cut, so every rank talks to every other -- which is
+     the latency half of the story -- and every point it holds is shared. */
+  constexpr int NPARTS = 4;
+  Mesh mesh;
+  brick(mixed_spec(), mesh);
+
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  Part::Zone_Map slab;
+  Part::make("slab-x")->assign(mesh, opt, slab);
+
+  Part::Metrics const good = Part::measure(
+      mesh, Part::build_decomposition(mesh, std::move(slab), NPARTS));
+  Part::Metrics const bad = Part::measure(
+      mesh, Part::build_decomposition(mesh, scattered(mesh, NPARTS), NPARTS));
+
+  CHECK(bad.kinds[Part::POINT].duplicated > good.kinds[Part::POINT].duplicated);
+  CHECK(bad.cut_faces > good.cut_faces);
+  CHECK(bad.total_comm_elems() > good.total_comm_elems());
+  CHECK(bad.max_neighbors == NPARTS - 1);
+  CHECK(bad.max_neighbors >= good.max_neighbors);
+  CHECK(bad.mean_surface_to_volume >= good.mean_surface_to_volume);
+
+  /* Load balance is the one thing round robin is good at, and the metric has
+     to say so rather than condemning it across the board. */
+  CHECK(bad.kinds[Part::ZONE].imbalance <= good.kinds[Part::ZONE].imbalance);
+}
+
+TEST_CASE("metrics: the CSV row matches its header", "[partition]") {
+  /* A sweep concatenates rows from separately configured builds under one
+     header, so a row that has drifted from the header is silently wrong data
+     rather than a broken file. */
+  Mesh mesh;
+  Part::Decomposition const d =
+      decompose(mesh, Case{mixed_spec(), "slab-y", 3});
+  Part::Metrics const m = Part::measure(mesh, d);
+
+  auto fields = [](std::string const &line) {
+    return 1 + std::count(line.begin(), line.end(), ',');
+  };
+
+  std::ostringstream head, row;
+  Part::report_csv_header(head);
+  Part::report_csv(m, "slab-y", row);
+  INFO(head.str() << row.str());
+
+  std::string const h = head.str(), r = row.str();
+  REQUIRE(h.back() == '\n');
+  REQUIRE(r.back() == '\n');
+  CHECK(std::count(h.begin(), h.end(), '\n') == 1);
+  CHECK(std::count(r.begin(), r.end(), '\n') == 1);
+  CHECK(fields(h) == fields(r));
+  CHECK(r.starts_with("slab-y,3,"));
+
+  /* And the matrix is nparts rows of nparts columns, whatever is in it. */
+  std::ostringstream matrix;
+  Part::write_comm_matrix(m, matrix);
+  std::istringstream in(matrix.str());
+  int rows = 0;
+  for (std::string line; std::getline(in, line); ++rows)
+    CHECK(fields(line) == d.nparts);
+  CHECK(rows == d.nparts);
 }

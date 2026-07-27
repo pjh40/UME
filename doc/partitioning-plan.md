@@ -145,8 +145,33 @@ driver compares `ranks.size()` to `numpe` first and says it is skipping.
 unrelated program reads all three files back, audits each, and cross-checks
 them.
 
-**Next: Phase 2, commit 12** — `Partition_Metrics.hh/.cc`, `--metrics
---metrics-csv --comm-matrix`.
+**Phase 2, commit 12 complete.** `Partition_Metrics.hh/.cc` — `Kind_Metrics`,
+`Metrics`, `measure`, `report`, `report_csv[_header]`, `write_comm_matrix`;
+`ume_partition --metrics --metrics-csv --comm-matrix`; four Catch2 tests and
+four CTests. All three trees green at 109/109.
+
+Three notes:
+
+- **`mask >= 1` is not "carries work" for a point, edge or face.** On a 4×3×2
+  brick only six of sixty points are real; the rest are the mesh's own outer
+  surface. An imbalance taken over those measures the brick, not the
+  decomposition. So `Kind_Metrics::load` is `local` for the shared kinds —
+  `gradzatp` visits every point a rank holds and takes the `mask == -1` branch
+  on the boundary ones — and `real` for the ghosted kinds, where a phantom
+  zone genuinely is skipped. The table prints `load`, not `real`, and says so.
+- `measure` walks the layouts the same way `fill_common` walks them, entity for
+  entity, which is what makes it a *prediction* of `extract` rather than an
+  estimate. `metrics: the numbers are what extract produces` pins every
+  counter — including the send matrix — against the meshes across the whole
+  case sweep, so the two cannot drift apart silently.
+- `cut_face_points` (102 on the sample) and `point_lambda1` (41) are
+  deliberately both reported: a point on several cut faces is charged once by
+  the second and once per face by the first, and that gap is exactly the gap
+  between what a graph edge-cut minimizes and what goes on the wire. It is the
+  reason `metis-kway-cut` is expected to lose to `kahypar` in phase 4.
+
+**Next: Phase 2, commit 13** — the MPI numerical-equivalence CTest, with the
+global-id side-car and an `ume_mpi` reference-compare option.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

@@ -21,6 +21,7 @@ set(UME_INCLUDE_FILES
   Decompose.hh
   Partition.hh
   Partition_Graph.hh
+  Partition_Metrics.hh
   RaggedRight.hh
   SOA_Entity.hh
   SOA_Idx_Corners.hh
@@ -58,6 +59,7 @@ add_library(Ume
   Decompose.cc
   Partition.cc
   Partition_Graph.cc
+  Partition_Metrics.cc
   SOA_Entity.cc
   SOA_Idx_Corners.cc
   SOA_Idx_Edges.cc

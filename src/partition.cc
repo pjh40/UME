@@ -19,12 +19,14 @@
 
 #include "Ume/Decompose.hh"
 #include "Ume/Partition.hh"
+#include "Ume/Partition_Metrics.hh"
 #include "Ume/mesh_audit.hh"
 #include "Ume/partition_check.hh"
 #include "Ume/process_mgmt.hh"
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -54,6 +56,11 @@ Options:
   --owner R            low | balanced | hash [low]
   --zone-map FILE      Read a zone->part map instead of running a method
   --dump-zone-map FILE Write the zone->part map the method produced
+  --metrics            Report what the decomposition costs
+  --metrics-csv FILE   Append one row of metrics to FILE, with a header if it
+                       is new, so that a sweep builds a plottable table
+  --comm-matrix FILE   Write the rank-to-rank element counts to FILE, as
+                       --ranks comma-separated rows
   --audit              Run mesh_audit on each partition before writing
   --check              Check the partitions against each other afterwards.
                        Unlike --audit, this holds every partition in memory.
@@ -122,7 +129,9 @@ int main(int argc, char *argv[]) {
   Part::Options opt;
   Part::Decompose_Options dopt;
   std::string method{"slab"}, zone_map_in, zone_map_out;
+  std::string metrics_csv, comm_matrix_file;
   bool do_audit{false}, do_check{false}, do_write{true}, have_ranks{false};
+  bool do_metrics{false};
   std::vector<std::string_view> positional;
 
   for (int i = 1; i < argc; ++i) {
@@ -189,6 +198,12 @@ int main(int argc, char *argv[]) {
       zone_map_in = next("--zone-map");
     } else if (arg == "--dump-zone-map") {
       zone_map_out = next("--dump-zone-map");
+    } else if (arg == "--metrics") {
+      do_metrics = true;
+    } else if (arg == "--metrics-csv") {
+      metrics_csv = next("--metrics-csv");
+    } else if (arg == "--comm-matrix") {
+      comm_matrix_file = next("--comm-matrix");
     } else if (arg == "--audit") {
       do_audit = true;
     } else if (arg == "--check") {
@@ -279,6 +294,43 @@ int main(int argc, char *argv[]) {
     if (empty > 0)
       std::cerr << "ume_partition: warning: " << empty << " of " << d.nparts
                 << " parts have no zones; the mesh has fewer zones than that\n";
+
+    /* Metrics come out of the decomposition alone, so they are available
+       before -- and with --no-write, instead of -- building any partition. */
+    if (do_metrics || !metrics_csv.empty() || !comm_matrix_file.empty()) {
+      Part::Metrics const met = Part::measure(mesh, d);
+      if (do_metrics)
+        Part::report(met, std::cout);
+
+      if (!metrics_csv.empty()) {
+        /* Appending a row per (method, ranks) is the point, so the header is
+           written only when the file is not already a table. */
+        std::error_code ec;
+        auto const size = std::filesystem::file_size(metrics_csv, ec);
+        bool const fresh = static_cast<bool>(ec) || size == 0;
+        std::ofstream os(metrics_csv, std::ios::app);
+        if (!os) {
+          std::cerr << "ume_partition: cannot open \"" << metrics_csv
+                    << "\" for writing\n";
+          Ume::finalize();
+          return 3;
+        }
+        if (fresh)
+          Part::report_csv_header(os);
+        Part::report_csv(met, zone_map_in.empty() ? method : "zone-map", os);
+      }
+
+      if (!comm_matrix_file.empty()) {
+        std::ofstream os(comm_matrix_file);
+        if (!os) {
+          std::cerr << "ume_partition: cannot open \"" << comm_matrix_file
+                    << "\" for writing\n";
+          Ume::finalize();
+          return 3;
+        }
+        Part::write_comm_matrix(met, os);
+      }
+    }
 
     /* One Mesh alive at a time, unless --check asks to compare them: the
        layouts already know everything about the other ranks that building

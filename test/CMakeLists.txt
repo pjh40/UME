@@ -800,6 +800,36 @@ add_test(NAME partition_cross_rank_check
 set_tests_properties(partition_cross_rank_check PROPERTIES
   FIXTURES_REQUIRED brick)
 
+# Metrics need no partition mesh, so this is the sweep shape: --no-write, and
+# a CSV that a second run appends its row to under the one header.
+add_test(NAME partition_metrics_clean
+  COMMAND ${CMAKE_COMMAND} -E rm -f metrics.csv
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_metrics_clean PROPERTIES FIXTURES_SETUP fresh)
+
+add_test(NAME partition_metrics
+  COMMAND ume_partition --ranks 4 --method slab-y --metrics
+          --metrics-csv metrics.csv --comm-matrix comm.csv
+          --no-write brick.ume
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_metrics PROPERTIES
+  FIXTURES_REQUIRED "brick;fresh" FIXTURES_SETUP metrics)
+
+add_test(NAME partition_metrics_append
+  COMMAND ume_partition --ranks 2 --method linear
+          --metrics-csv metrics.csv --no-write brick.ume
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_metrics_append PROPERTIES
+  FIXTURES_REQUIRED "brick;metrics" FIXTURES_SETUP metrics_table)
+
+# One header and two rows, which is what makes the file plottable.
+add_test(NAME partition_metrics_table
+  COMMAND ${CMAKE_COMMAND} -E cat metrics.csv
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_metrics_table PROPERTIES
+  FIXTURES_REQUIRED metrics_table
+  PASS_REGULAR_EXPRESSION "^method,[^\n]*\nslab-y,4,[^\n]*\nlinear,2,")
+
 # The strongest end-to-end test available: an unrelated program reads all
 # three files back, audits each, and then checks them against each other.
 add_test(NAME partition_audit_all
