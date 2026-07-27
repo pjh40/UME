@@ -42,8 +42,31 @@ Three notes for whoever picks this up:
   the `(key, zone index)` sort order, not of the bare coordinate — the interval
   test that looked obvious is wrong, and `test_partition.cc` says why.
 
-**Next: Phase 1, commit 6** — `Decompose.hh/.cc`: `Entity_Layout` and
-`build_decomposition`, no `extract` yet, tested directly on the layouts.
+**Phase 1, commit 6 complete.** `Decompose.hh/.cc` — `Ghost_Depth`,
+`Owner_Rule`, `Decompose_Options`, `Entity_Layout`, `build_decomposition`, and
+nine layout tests in `test_partition.cc`. All three trees green at 77/77.
+
+Three notes:
+
+- The ghost side/corner rule generalized cleanly. Rather than "the ring on each
+  cut face", the implementation imports every side of a ghost zone whose *face
+  this rank already holds*, and every corner of a ghost zone whose *point this
+  rank already holds*. For `FACE_ADJACENT` that is exactly the plan's rule (a
+  cut face is precisely a face of the ghost zone that this rank holds), it
+  extends to `POINT_ADJACENT` without a second rule, and it makes "no ghost
+  points, edges or faces" true by construction rather than by argument.
+- `lonely_facets()` in `test_partition.cc` checks the `(face, edge)` invariant
+  straight off the layouts, before any mesh exists. `Ghost_Depth::NONE` is
+  tested to *break* it, so the ghost machinery is demonstrably load-bearing
+  rather than merely present.
+- A shared point that a rank holds but does not source is a COPY in the real
+  index range, **not** a ghost. `owner[g] != r` therefore does not mean "ghost
+  on r" — the two lists have to be compared directly. Getting this wrong is
+  easy and the layouts will not complain.
+
+**Next: Phase 1, commit 7** — `extract()`, the big one: renumbering, ghost
+records and neighbor lists are mutually dependent and nothing passes until all
+three are right. Test is the N=1 identity round trip.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with
