@@ -18,6 +18,7 @@
 
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/mesh_audit.hh"
+#include "Ume/partition_check.hh"
 #include "Ume/process_mgmt.hh"
 #include <algorithm>
 #include <cstring>
@@ -56,23 +57,51 @@ int main(int argc, char *argv[]) {
     if (ranks.empty()) {
       status = 1;
     } else {
-      Ume::Comm::Dummy_Transport comm;
-      ranks[0]->comm = &comm;
+      for (Mesh_Ptr const &m : ranks)
+        Ume::attach_serial_transport(*m);
 
       if (audit_only) {
-        /* Note that only rank 0 gets a Transport, so this audits one
-           partition at a time; anything that depends on a gather/scatter is
-           not exercised here. */
+        /* Every rank, not just the first: an audit of one partition is an
+           audit of one partition, and a decomposition can put its mistake in
+           any of them. */
         Audit_Options opts;
         opts.census = true;
-        std::cout << "\nAudit of rank " << ranks[0]->mype << '\n';
-        Audit_Result const res = audit(*ranks[0], std::cout, opts);
-        std::cout << "  " << res.checks - res.failed_checks << '/' << res.checks
-                  << " checks passed";
-        if (!res)
-          std::cout << ", " << res.problems << " problems";
-        std::cout << std::endl;
-        status = res ? 0 : 1;
+        for (Mesh_Ptr const &m : ranks) {
+          std::cout << "\nAudit of rank " << m->mype << '\n';
+          Audit_Result const res = audit(*m, std::cout, opts);
+          std::cout << "  " << res.checks - res.failed_checks << '/'
+                    << res.checks << " checks passed";
+          if (!res)
+            std::cout << ", " << res.problems << " problems";
+          std::cout << std::endl;
+          if (!res)
+            status = 1;
+        }
+
+        /* What no per-rank audit can reach: whether the ranks agree with each
+           other about the entities they share.  It needs the whole set, so a
+           partial one is skipped rather than reported as a disagreement. */
+        int const numpe = ranks[0]->numpe;
+        if (numpe > 1 && static_cast<int>(ranks.size()) == numpe) {
+          std::vector<Mesh const *> all;
+          all.reserve(ranks.size());
+          for (Mesh_Ptr const &m : ranks)
+            all.push_back(m.get());
+
+          std::cout << "\nCross-rank check\n";
+          Ume::Part::Check_Result const res =
+              Ume::Part::check_partitions(all, std::cout);
+          std::cout << "  " << res.checks - res.failed_checks << '/'
+                    << res.checks << " checks passed";
+          if (!res)
+            std::cout << ", " << res.problems << " problems";
+          std::cout << std::endl;
+          if (!res)
+            status = 1;
+        } else if (numpe > 1) {
+          std::cout << "\nCross-rank check skipped: " << ranks.size() << " of "
+                    << numpe << " ranks were given" << std::endl;
+        }
       } else {
         [[maybe_unused]] auto const &test =
             ranks[0]->ds->caccess_vec3v("corner_csurf");

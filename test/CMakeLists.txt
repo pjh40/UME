@@ -799,3 +799,10 @@ add_test(NAME partition_cross_rank_check
   WORKING_DIRECTORY ${PARTITION_WORKDIR})
 set_tests_properties(partition_cross_rank_check PROPERTIES
   FIXTURES_REQUIRED brick)
+
+# The strongest end-to-end test available: an unrelated program reads all
+# three files back, audits each, and then checks them against each other.
+add_test(NAME partition_audit_all
+  COMMAND ume_serial --audit part.00000.ume part.00001.ume part.00002.ume
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_audit_all PROPERTIES FIXTURES_REQUIRED parts)

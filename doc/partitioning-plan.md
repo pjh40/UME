@@ -133,8 +133,20 @@ Three notes:
   ghost sides still match exactly on their own points; it is the zone
   component that is a proper subset.
 
-**Next: Phase 2, commit 11** — audit every rank in `ume_serial`, then run
-`check_partitions` over them.
+**Phase 2, commit 11 complete.** `ume_serial --audit` gives every rank a
+Transport, audits every rank rather than only `ranks[0]`, and then runs
+`check_partitions` over the whole set. All three trees green at 101/101.
+
+One note: a *partial* set is skipped, not failed. `ume_serial --audit
+part.00001.ume` is a legitimate thing to type, and `numpe` says 3, so
+`check_partitions` would have reported "1 of 3 ranks" as a disagreement. The
+driver compares `ranks.size()` to `numpe` first and says it is skipping.
+`partition_audit_all` is now the strongest end-to-end test in the suite: an
+unrelated program reads all three files back, audits each, and cross-checks
+them.
+
+**Next: Phase 2, commit 12** — `Partition_Metrics.hh/.cc`, `--metrics
+--metrics-csv --comm-matrix`.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with
