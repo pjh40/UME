@@ -29,7 +29,9 @@
 #include "Ume/partition_check.hh"
 #include <algorithm>
 #include <array>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -302,6 +304,144 @@ TEST_CASE("partition: boxes cost less to communicate than slabs",
      both methods cut at weight boundaries, so a brick of identical hexes
      divides exactly. */
   CHECK(box.kinds[Part::ZONE].imbalance == 1.0);
+}
+
+TEST_CASE("partition: the principal axis follows the cloud", "[partition]") {
+  using Catch::Approx;
+
+  /* `principal_axis` takes centroids and an index list, so it can be handed a
+     cloud directly -- which is a far sharper test of the eigen solver than any
+     mesh, whose principal axis is only ever approximately known. */
+  auto axis_of = [](std::vector<Vec3> const &cloud) {
+    std::vector<int> v(cloud.size());
+    std::iota(v.begin(), v.end(), 0);
+    return Part::principal_axis(v, cloud, {});
+  };
+  auto line = [](Vec3 const &dir, int n) {
+    std::vector<Vec3> cloud;
+    for (int i = -n; i <= n; ++i)
+      cloud.push_back(Vec3{{dir[0] * i, dir[1] * i, dir[2] * i}});
+    return cloud;
+  };
+
+  double const r2 = std::sqrt(0.5);
+  CHECK(axis_of(line(Vec3{{1.0, 0.0, 0.0}}, 4))[0] == Approx(1.0));
+  CHECK(axis_of(line(Vec3{{0.0, 0.0, 1.0}}, 4))[2] == Approx(1.0));
+
+  /* The point of the method: a direction no coordinate axis is near. */
+  Vec3 const diag = axis_of(line(Vec3{{r2, r2, 0.0}}, 4));
+  CHECK(diag[0] == Approx(r2));
+  CHECK(diag[1] == Approx(r2));
+  CHECK(diag[2] == Approx(0.0).margin(1e-15));
+
+  /* An eigenvector is only defined up to sign, so the same line traversed the
+     other way has to give the same answer rather than its negation. */
+  Vec3 const back = axis_of(line(Vec3{{-r2, -r2, 0.0}}, 4));
+  CHECK(back[0] == Approx(diag[0]));
+  CHECK(back[1] == Approx(diag[1]));
+
+  /* Longest wins, not first: a slab spread wide in y and narrow in x. */
+  std::vector<Vec3> slab;
+  for (int i = -1; i <= 1; ++i)
+    for (int j = -8; j <= 8; ++j)
+      slab.push_back(Vec3{{static_cast<double>(i), static_cast<double>(j),
+          0.0}});
+  CHECK(axis_of(slab)[1] == Approx(1.0));
+
+  /* No variance at all -- one zone, or several sharing a centroid -- has no
+     principal axis to find, and must still come back with a usable direction
+     rather than a NaN. */
+  for (std::vector<Vec3> const &degenerate :
+      {std::vector<Vec3>{Vec3{{3.0, 4.0, 5.0}}},
+          std::vector<Vec3>(4, Vec3{{3.0, 4.0, 5.0}})}) {
+    Vec3 const d = axis_of(degenerate);
+    CHECK(std::isfinite(d[0]));
+    CHECK(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] == Approx(1.0));
+  }
+}
+
+TEST_CASE("partition: an inertial cut follows a mesh the axes do not",
+    "[partition]") {
+  /* This is the reason `rib` exists next to `rcb`.  A long thin brick turned
+     45 degrees about z has the same extent along x as along y, so every
+     coordinate axis `rcb` can pick cuts the mesh diagonally; the principal
+     axis of the centroids is the direction the mesh is actually long in, and
+     the cut normal to it is the small cross-section. */
+  constexpr int NPARTS = 2;
+  Brick::Spec spec;
+  spec.nx = 12;
+  spec.ny = 2;
+  spec.nz = 2;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  /* Rotate the stored coordinates before anything derived from them is asked
+     for -- the Datastore never invalidates a derived array. */
+  double const c = std::cos(std::atan(1.0)), s = std::sin(std::atan(1.0));
+  for (Vec3 &p : mesh.ds->access_vec3v("pcoord")) {
+    double const x = p[0], y = p[1];
+    p[0] = c * x - s * y;
+    p[1] = s * x + c * y;
+  }
+
+  auto const &zcoord = Part::zone_centroids(mesh);
+  std::array<double, 3> const ext =
+      Part::centroid_extent(Part::real_zones(mesh), zcoord);
+  REQUIRE(ext[0] == Catch::Approx(ext[1]).epsilon(1e-12));
+  CHECK(Part::principal_axis(Part::real_zones(mesh), zcoord, {})[0] ==
+      Catch::Approx(c));
+
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  auto measure = [&](char const *method) {
+    Part::Zone_Map z2r;
+    Part::make(method)->assign(mesh, opt, z2r);
+    return Part::measure(
+        mesh, Part::build_decomposition(mesh, std::move(z2r), NPARTS));
+  };
+  Part::Metrics const inertial = measure("rib");
+  Part::Metrics const coordinate = measure("rcb");
+
+  CHECK(inertial.cut_faces < coordinate.cut_faces);
+  CHECK(inertial.kinds[Part::POINT].duplicated <
+      coordinate.kinds[Part::POINT].duplicated);
+  CHECK(inertial.total_comm_elems() < coordinate.total_comm_elems());
+
+  /* Both still divide the work evenly; the whole difference is the surface. */
+  CHECK(inertial.kinds[Part::ZONE].imbalance == 1.0);
+  CHECK(coordinate.kinds[Part::ZONE].imbalance == 1.0);
+}
+
+TEST_CASE("partition: the two bisections agree on an axis-aligned mesh",
+    "[partition]") {
+  /* The principal axis of a *box* of zones is exactly its longest coordinate
+     axis, ties included, so `rib` has to reproduce `rcb` here bit for bit
+     rather than nearly.  That is a statement about the eigen solver: an
+     already-diagonal covariance has to come back as a clean coordinate
+     direction, not one rounding error away from one, or the projections it
+     sorts by would differ in the last bit and the tie-breaking would wander.
+
+     A cube split by powers of two is the case where every piece stays a box.
+     A cut that falls *inside* a column of zones -- which is what a part count
+     that does not divide the mesh gives -- leaves a piece with a step in it,
+     and the principal axis of a stepped piece is legitimately not a coordinate
+     axis.  That is `rib` doing its job, not a disagreement. */
+  Brick::Spec spec;
+  spec.nx = 4;
+  spec.ny = 4;
+  spec.nz = 4;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  Part::Options opt;
+  Part::Zone_Map rcb, rib;
+  for (int nparts : {1, 2, 4, 8}) {
+    INFO("nparts=" << nparts);
+    opt.nparts = nparts;
+    Part::make("rcb")->assign(mesh, opt, rcb);
+    Part::make("rib")->assign(mesh, opt, rib);
+    CHECK(rcb == rib);
+  }
 }
 
 TEST_CASE("partition: nparts must be positive", "[partition]") {

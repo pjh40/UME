@@ -17,6 +17,7 @@
 #include "Ume/Partition_Graph.hh"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -136,6 +137,127 @@ std::array<int, 3> dims_create(
   return dims;
 }
 
+namespace {
+
+//! The unit eigenvector of the largest eigenvalue of a symmetric 3x3 matrix
+/*! Cyclic Jacobi, which for a 3x3 is three rotations a sweep and converges in
+    a handful of sweeps.  It is exact on a matrix that is already diagonal --
+    the case an axis-aligned mesh presents -- so `rib` reproduces `rcb` there
+    rather than wandering off by a rounding error. */
+Vec3 dominant_eigenvector(std::array<std::array<double, 3>, 3> a) {
+  std::array<Vec3, 3> vec{Vec3{{1.0, 0.0, 0.0}}, Vec3{{0.0, 1.0, 0.0}},
+      Vec3{{0.0, 0.0, 1.0}}};
+
+  for (int sweep = 0; sweep < 32; ++sweep) {
+    double off = 0.0;
+    for (std::size_t p = 0; p + 1 < 3; ++p)
+      for (std::size_t q = p + 1; q < 3; ++q)
+        off += std::abs(a[p][q]);
+    double const scale =
+        std::abs(a[0][0]) + std::abs(a[1][1]) + std::abs(a[2][2]);
+    if (off <= std::numeric_limits<double>::epsilon() * scale)
+      break;
+
+    for (std::size_t p = 0; p + 1 < 3; ++p)
+      for (std::size_t q = p + 1; q < 3; ++q) {
+        if (a[p][q] == 0.0)
+          continue;
+        double const theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+        /* The smaller of the two roots, which is the rotation that keeps the
+           eigenvalues in the order they are already nearly in.  A `theta` so
+           large that it overflows leaves `t` at zero, which is the right
+           answer: the off-diagonal is negligible beside the diagonal. */
+        double const t = std::copysign(1.0, theta) /
+            (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+        double const c = 1.0 / std::sqrt(t * t + 1.0);
+        double const s = t * c;
+        double const h = t * a[p][q];
+        a[p][p] -= h;
+        a[q][q] += h;
+        a[p][q] = a[q][p] = 0.0;
+
+        std::size_t const r = 3 - p - q; //!< the axis this rotation fixes
+        double const arp = a[r][p], arq = a[r][q];
+        a[r][p] = a[p][r] = c * arp - s * arq;
+        a[r][q] = a[q][r] = s * arp + c * arq;
+
+        for (std::size_t i = 0; i < 3; ++i) {
+          double const vp = vec[p][i], vq = vec[q][i];
+          vec[p][i] = c * vp - s * vq;
+          vec[q][i] = s * vp + c * vq;
+        }
+      }
+  }
+
+  std::size_t best = 0;
+  for (std::size_t i = 1; i < 3; ++i)
+    if (a[i][i] > a[best][best])
+      best = i;
+  Vec3 dir = vec[best];
+  normalize(dir);
+
+  /* An eigenvector is only defined up to sign, and the sign the rotations
+     happen to leave is an accident.  Pin it down so that a mesh and the same
+     mesh with its zones renumbered give the same cuts, not mirrored ones. */
+  std::size_t lead = 0;
+  for (std::size_t i = 1; i < 3; ++i)
+    if (std::abs(dir[i]) > std::abs(dir[lead]))
+      lead = i;
+  if (dir[lead] < 0.0)
+    dir *= -1.0;
+  return dir;
+}
+
+} // namespace
+
+Vec3 principal_axis(std::span<int const> v, DS_Types::VEC3V_T const &zcoord,
+    std::span<int const> wgt) {
+  Vec3 const x_axis{{1.0, 0.0, 0.0}};
+  if (v.empty())
+    return x_axis;
+
+  auto raw = [wgt](int z) {
+    return wgt.empty() ? 1.0
+                       : std::max(
+                             static_cast<double>(wgt[static_cast<std::size_t>(
+                                 z)]),
+                             0.0);
+  };
+  double total = 0.0;
+  for (int const z : v)
+    total += raw(z);
+  /* Weights that are all zero say nothing about which axis is longest, so fall
+     back to counting zones rather than dividing by zero. */
+  bool const unit = !(total > 0.0);
+  auto weight = [&](int z) { return unit ? 1.0 : raw(z); };
+  double const W = unit ? static_cast<double>(v.size()) : total;
+
+  std::array<double, 3> mean{0.0, 0.0, 0.0};
+  for (int const z : v) {
+    double const w = weight(z);
+    for (std::size_t d = 0; d < 3; ++d)
+      mean[d] += w * zcoord[static_cast<std::size_t>(z)][d];
+  }
+  for (std::size_t d = 0; d < 3; ++d)
+    mean[d] /= W;
+
+  std::array<std::array<double, 3>, 3> cov{};
+  for (int const z : v) {
+    double const w = weight(z);
+    std::array<double, 3> r;
+    for (std::size_t d = 0; d < 3; ++d)
+      r[d] = zcoord[static_cast<std::size_t>(z)][d] - mean[d];
+    for (std::size_t i = 0; i < 3; ++i)
+      for (std::size_t j = 0; j < 3; ++j)
+        cov[i][j] += w * r[i] * r[j];
+  }
+  for (std::size_t i = 0; i < 3; ++i)
+    for (std::size_t j = 0; j < 3; ++j)
+      cov[i][j] /= W;
+
+  return dominant_eigenvector(cov);
+}
+
 void split_sorted(std::span<int const> v, std::span<double const> key,
     std::span<int const> wgt, int first_part, int k, Zone_Map &z2r) {
   if (k < 1)
@@ -199,6 +321,19 @@ std::vector<int> begin_assign(
   return real_zones(mesh);
 }
 
+//! The coordinate axis the centroids of `v` are spread furthest along
+int longest_axis(std::span<int const> v, DS_Types::VEC3V_T const &zcoord) {
+  std::array<double, 3> const ext = centroid_extent(v, zcoord);
+  return static_cast<int>(std::ranges::max_element(ext) - ext.begin());
+}
+
+//! The unit vector along coordinate axis `a`
+Vec3 axis_vector(int a) {
+  Vec3 e{{0.0, 0.0, 0.0}};
+  e[static_cast<std::size_t>(a)] = 1.0;
+  return e;
+}
+
 //! Cut the mesh into slabs normal to one coordinate axis
 class Slab : public Partitioner {
 public:
@@ -217,7 +352,7 @@ public:
     auto const &zcoord = zone_centroids(mesh);
     std::vector<int> const wgt = zone_weights(mesh, opt);
 
-    int const axis = (axis_ >= 0) ? axis_ : longest_extent(v, zcoord);
+    int const axis = (axis_ >= 0) ? axis_ : longest_axis(v, zcoord);
     std::vector<double> key(static_cast<std::size_t>(mesh.zones.size()), 0.0);
     for (int const z : v)
       key[static_cast<std::size_t>(z)] = zcoord[static_cast<std::size_t>(z)][static_cast<std::size_t>(axis)];
@@ -226,12 +361,6 @@ public:
   }
 
 private:
-  static int longest_extent(
-      std::vector<int> const &v, DS_Types::VEC3V_T const &zcoord) {
-    std::array<double, 3> const ext = centroid_extent(v, zcoord);
-    return static_cast<int>(std::ranges::max_element(ext) - ext.begin());
-  }
-
   int axis_;
   char const *name_;
   char const *describe_;
@@ -340,6 +469,97 @@ private:
   char const *describe_;
 };
 
+//! Scratch shared by every node of one recursive bisection
+struct Bisect_Scratch {
+  //! The projection of each real zone's centroid onto the current direction
+  std::vector<double> key;
+  //! Group numbers for the node being split, overwritten as the walk descends
+  Zone_Map group;
+};
+
+//! Cut `v` in two along `direction(v)`, and each half again, `k` parts in all
+/*! The direction is chosen afresh for every piece -- that is the difference
+    between this and a grid method, and what lets it follow a mesh that is not
+    a box.
+
+    An odd `k` has to be split unevenly, and the ratio is taken by splitting
+    `k` ways and keeping the first `k1` groups rather than by aiming at a
+    weight fraction directly.  That buys two things from `split_sorted`: the
+    halves are in the ratio `k1 : k - k1` by weight, and each of the `k` groups
+    is non-empty whenever there are at least `k` zones, so each half arrives at
+    its own recursion with at least as many zones as it has parts to fill. */
+void bisect(std::vector<int> const &v, std::span<int const> wgt,
+    DS_Types::VEC3V_T const &zcoord,
+    std::function<Vec3(std::span<int const>)> const &direction, int first_part,
+    int k, Bisect_Scratch &scratch, Zone_Map &z2r) {
+  if (v.empty())
+    return;
+  if (k == 1) {
+    for (int const z : v)
+      z2r[static_cast<std::size_t>(z)] = first_part;
+    return;
+  }
+
+  Vec3 const dir = direction(v);
+  for (int const z : v)
+    scratch.key[static_cast<std::size_t>(z)] =
+        dotprod(zcoord[static_cast<std::size_t>(z)], dir);
+
+  int const k1 = (k + 1) / 2;
+  split_sorted(v, scratch.key, wgt, 0, k, scratch.group);
+
+  /* Both halves are read out before either recurses, because the recursion
+     overwrites the scratch this just wrote. */
+  std::vector<int> half[2];
+  for (int const z : v)
+    half[scratch.group[static_cast<std::size_t>(z)] < k1 ? 0 : 1].push_back(z);
+
+  bisect(half[0], wgt, zcoord, direction, first_part, k1, scratch, z2r);
+  bisect(half[1], wgt, zcoord, direction, first_part + k1, k - k1, scratch,
+      z2r);
+}
+
+//! Cut the mesh in two, and each half again, choosing a direction each time
+class Recursive : public Partitioner {
+public:
+  /*! `inertial` picks each cut normal to the principal axis of the piece being
+      cut rather than to its longest *coordinate* axis, which is what lets it
+      follow a mesh whose long direction is not an axis of the coordinate
+      system. */
+  Recursive(bool inertial, char const *name, char const *describe)
+      : inertial_{inertial}, name_{name}, describe_{describe} {}
+
+  char const *name() const override { return name_; }
+  char const *describe() const override { return describe_; }
+
+  void assign(SOA_Idx::Mesh const &mesh, Options const &opt,
+      Zone_Map &z2r) const override {
+    std::vector<int> const v = begin_assign(mesh, opt, z2r);
+    auto const &zcoord = zone_centroids(mesh);
+    std::vector<int> const wgt = zone_weights(mesh, opt);
+
+    std::function<Vec3(std::span<int const>)> direction;
+    if (inertial_)
+      direction = [&zcoord, &wgt](std::span<int const> piece) {
+        return principal_axis(piece, zcoord, wgt);
+      };
+    else
+      direction = [&zcoord](std::span<int const> piece) {
+        return axis_vector(longest_axis(piece, zcoord));
+      };
+
+    Bisect_Scratch scratch;
+    scratch.key.assign(static_cast<std::size_t>(mesh.zones.size()), 0.0);
+    scratch.group.assign(static_cast<std::size_t>(mesh.zones.size()), -1);
+    bisect(v, wgt, zcoord, direction, 0, opt.nparts, scratch, z2r);
+  }
+
+private:
+  bool inertial_;
+  char const *name_;
+  char const *describe_;
+};
+
 //! Cut the mesh into contiguous runs of the original zone numbering
 class Linear : public Partitioner {
 public:
@@ -369,6 +589,10 @@ constexpr Method TABLE[] = {
     {"linear", "contiguous ranges of the input zone numbering", nullptr, true},
     {"pencil", "columns spanning the shortest extent of the mesh", nullptr,
         true},
+    {"rcb", "recursive bisection normal to each piece's longest axis", nullptr,
+        true},
+    {"rib", "recursive bisection normal to each piece's principal axis",
+        nullptr, true},
     {"slab", "slabs normal to the longest extent of the mesh", nullptr, true},
     {"slab-x", "slabs normal to x", nullptr, true},
     {"slab-y", "slabs normal to y", nullptr, true},
@@ -404,6 +628,10 @@ std::unique_ptr<Partitioner> make(std::string_view name) {
     return std::make_unique<Linear>();
   if (name == "pencil")
     return std::make_unique<Block>(2, m->name, m->describe);
+  if (name == "rcb")
+    return std::make_unique<Recursive>(false, m->name, m->describe);
+  if (name == "rib")
+    return std::make_unique<Recursive>(true, m->name, m->describe);
   if (name == "slab")
     return std::make_unique<Slab>(-1, m->name, m->describe);
   if (name == "slab-x")

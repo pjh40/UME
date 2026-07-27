@@ -261,14 +261,45 @@ On an 8×6×4 brick split eight ways, `point_lambda1` is 275 for `slab-x` and 19
 for both `block` and `pencil` — the two agree here because the shape rule gives
 (4,2,1) either way, z being too thin to be worth cutting.
 
-Next: `rcb`/`rib`, then `morton`/`hilbert`, `roundrobin`/`random`, and `bfs` —
-one commit per group. `centroid_extent` is already there for `rcb`'s
-per-subset longest axis.
-
 Both new methods live in `Partition.cc` alongside `slab` and `linear` rather
 than in the `Partition_Geometric.cc` the architecture section names. Splitting
 the file needs a private header to reach the classes from `make()`; do it when
 `morton`/`hilbert` land and the file has earned it.
+
+**Phase 3, commit 15 complete.** `principal_axis` (weighted centroid
+covariance, cyclic Jacobi) and the `rcb`/`rib` methods in `Partition.cc`, plus
+three Catch2 tests. All three trees green at 118/118, and 122/122 with MPI.
+
+Three notes:
+
+- **The uneven half of an odd `k` is taken by splitting `k` ways and keeping
+  the first `k1` groups**, rather than by aiming `split_sorted` at a weight
+  fraction. That buys two things at once: the halves come out in the ratio
+  `k1 : k - k1` by weight, and because `split_sorted` gives every one of its
+  `k` groups a zone whenever there are `k` to give, each half reaches its own
+  recursion holding at least as many zones as it has parts to fill. Aiming at
+  a fraction directly would need that second property re-established by hand at
+  every level.
+- **`rib` reproduces `rcb` exactly only while the pieces are still boxes.** The
+  obvious test — a 4×3×2 brick, every part count — fails, and is right to: a
+  cut that falls *inside* a column of zones leaves a piece with a step in it,
+  and a stepped piece has a genuinely off-axis principal direction. The test
+  that survives is a cube split by powers of two, and what it pins is the eigen
+  solver: an already-diagonal covariance has to come back as a clean coordinate
+  direction, ties included, or the projections would differ in the last bit and
+  the tie-breaking would wander.
+- No `Brick::Spec` knob rotates a mesh, so the test that shows `rib` earning
+  its place rotates `pcoord` itself, after `Brick::build` and before anything
+  derived is read — the Datastore never invalidates. A 12×2×2 brick turned 45°
+  about z has equal x and y extents, so every axis `rcb` can choose cuts it
+  diagonally, and `rib` finds the direction the mesh is actually long in.
+
+On a pure-hex 8×6×4 brick split eight ways, `rcb` and `rib` both give
+`point_lambda1` 165 — identical to `block`, because recursive bisection of a
+box by powers of two *is* the grid — against 245 for `slab-x`.
+
+Next: `morton`/`hilbert`, `roundrobin`/`random`, and `bfs` — one commit per
+group.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

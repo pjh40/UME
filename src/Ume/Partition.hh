@@ -156,6 +156,20 @@ std::array<double, 3> centroid_extent(
 std::array<int, 3> dims_create(
     int nparts, std::array<double, 3> const &extent, int naxes = 3);
 
+//! The direction along which the centroids of the zones `v` vary most
+/*! The unit eigenvector of the largest eigenvalue of the weight-weighted
+    covariance of the centroids -- the axis a cloud of zones is longest along,
+    whether or not that is a coordinate axis, which is the whole difference
+    between `rib` and `rcb`.  `wgt` is indexed by zone index and may be empty,
+    which means unit weights.
+
+    The sign is canonical: the largest-magnitude component is made positive, so
+    the result does not depend on the order the rotations happened to be
+    applied in.  A cloud with no variance at all -- one zone, or several with
+    the same centroid -- has no principal axis, and gets the x axis. */
+Vec3 principal_axis(std::span<int const> v, DS_Types::VEC3V_T const &zcoord,
+    std::span<int const> wgt);
+
 //! Split the zones `v` into `k` groups of equal weight, ordered by `key`
 /*! `key` and `wgt` are indexed by *zone index*, not by position in `v`, so a
     recursive method can split a subset without recompacting anything; `wgt`
