@@ -16,6 +16,7 @@
 #include "Ume/Decompose.hh"
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -385,6 +386,311 @@ Decomposition build_decomposition(SOA_Idx::Mesh const &src, Zone_Map z2r,
   to_csr(gc, nparts, d.corners.gstart, d.corners.ggid);
 
   return d;
+}
+
+/* ------------------------------- extract --------------------------------- */
+
+namespace {
+
+//! For each global entity, the ranks holding it, ascending
+/*! The layouts are keyed the other way round -- rank to entities -- which is
+    what a rank's own mesh needs.  Turning one round is what the *other* half
+    of `extract` needs: which ranks to tell about an entity this rank sources,
+    and how many ranks share it at all. */
+class Presence {
+public:
+  Presence(std::vector<int> const &start, std::vector<int> const &gid,
+      int nparts, int nglobal) {
+    start_.assign(static_cast<std::size_t>(nglobal) + 1, 0);
+    for (int const g : gid)
+      start_[static_cast<std::size_t>(g) + 1] += 1;
+    for (int g = 0; g < nglobal; ++g)
+      start_[static_cast<std::size_t>(g) + 1] +=
+          start_[static_cast<std::size_t>(g)];
+
+    rank_.resize(gid.size());
+    std::vector<int> fill(start_.begin(), start_.end() - 1);
+    for (int r = 0; r < nparts; ++r)
+      for (int i = start[static_cast<std::size_t>(r)];
+          i < start[static_cast<std::size_t>(r) + 1]; ++i)
+        rank_[static_cast<std::size_t>(
+            fill[static_cast<std::size_t>(gid[static_cast<std::size_t>(i)])]++)] =
+            r;
+  }
+
+  std::span<int const> operator[](int g) const {
+    auto const b = static_cast<std::size_t>(start_[static_cast<std::size_t>(g)]);
+    auto const e =
+        static_cast<std::size_t>(start_[static_cast<std::size_t>(g) + 1]);
+    return std::span<int const>{rank_.data() + b, e - b};
+  }
+
+private:
+  std::vector<int> start_, rank_;
+};
+
+//! Global index to this rank's local index, or -1
+class Renumber {
+public:
+  Renumber(Entity_Layout const &l, int pe, int nglobal)
+      : g2l_(static_cast<std::size_t>(nglobal), -1) {
+    for (int i = 0; i < l.size(pe); ++i)
+      g2l_[static_cast<std::size_t>(l.global_index(pe, i))] = i;
+  }
+  int operator[](int g) const {
+    return (g >= 0 && g < static_cast<int>(g2l_.size()))
+        ? g2l_[static_cast<std::size_t>(g)]
+        : -1;
+  }
+  //! The same, but a map that fails to resolve is a bug rather than a value
+  int require(int g, char const *what, int at) const {
+    int const l = (*this)[g];
+    if (l < 0)
+      throw std::logic_error(std::string("extract: ") + what + " of " +
+          std::to_string(at) + " names " + std::to_string(g) +
+          ", which this rank does not hold");
+    return l;
+  }
+
+private:
+  std::vector<int> g2l_;
+};
+
+//! Everything about one entity kind that does not involve its own maps
+/*! Masks, comm types, the ghost records and the neighbor lists are the same
+    shape of problem for all seven kinds; only whether the kind is duplicated
+    on a cut or ghosted across one changes the answer. */
+void fill_common(SOA_Idx::Entity const &se, SOA_Idx::Entity &de,
+    Entity_Layout const &l, int pe, bool shared_kind, bool comm) {
+  int const nl = l.local_size(pe), ng = l.ghost_local_size(pe);
+  Presence const locals{l.start, l.gid, l.nparts(), l.nglobal()};
+  Presence const ghosts{l.gstart, l.ggid, l.nparts(), l.nglobal()};
+
+  std::map<int, std::vector<int>> cpys, srcs;
+
+  for (int i = 0; i < nl; ++i) {
+    int const g = l.global_index(pe, i);
+    int const owner = l.owner[static_cast<std::size_t>(g)];
+    de.mask[static_cast<std::size_t>(i)] = se.mask[static_cast<std::size_t>(g)];
+
+    if (shared_kind) {
+      /* A point, edge or face on a cut is a real entity on every rank that
+         holds it; one of them is the SOURCE and the rest are COPYs. */
+      auto const on = locals[g];
+      if (on.size() == 1)
+        de.comm_type[static_cast<std::size_t>(i)] = SOA_Idx::Entity::INTERNAL;
+      else if (owner == pe) {
+        de.comm_type[static_cast<std::size_t>(i)] = SOA_Idx::Entity::SOURCE;
+        for (int const r : on)
+          if (r != pe)
+            srcs[r].push_back(i);
+      } else {
+        de.comm_type[static_cast<std::size_t>(i)] = SOA_Idx::Entity::COPY;
+        cpys[owner].push_back(i);
+      }
+    } else {
+      /* A zone, corner or side is real on exactly one rank; it is a SOURCE
+         only when somebody else keeps a ghost of it. */
+      auto const shadows = comm ? ghosts[g] : std::span<int const>{};
+      de.comm_type[static_cast<std::size_t>(i)] = shadows.empty()
+          ? SOA_Idx::Entity::INTERNAL
+          : SOA_Idx::Entity::SOURCE;
+      for (int const r : shadows)
+        srcs[r].push_back(i);
+    }
+  }
+
+  for (int j = 0; j < ng; ++j) {
+    int const i = nl + j;
+    int const g = l.global_index(pe, i);
+    int const owner = l.owner[static_cast<std::size_t>(g)];
+    de.mask[static_cast<std::size_t>(i)] = 0;
+    de.comm_type[static_cast<std::size_t>(i)] = SOA_Idx::Entity::GHOST;
+    de.cpy_idx[static_cast<std::size_t>(j)] = i;
+    de.src_pe[static_cast<std::size_t>(j)] = owner;
+    de.src_idx[static_cast<std::size_t>(j)] = l.local_index(owner, g);
+    /* `renumbering.cc` reads ghost_mask == 0 as "null ghost", so the owner's
+       mask is the right thing to propagate. */
+    de.ghost_mask[static_cast<std::size_t>(j)] =
+        se.mask[static_cast<std::size_t>(g)];
+    if (comm)
+      cpys[owner].push_back(i);
+  }
+
+  /* One Neighbor per rank, never two: `Comm_MPI` matches a message by (pe,
+     tag), so a second entry for the same rank would pair with the wrong
+     receive.  Both sides built their list in ascending global order, which
+     makes the correspondence positional without anything being exchanged. */
+  auto to_neighbors = [](std::map<int, std::vector<int>> &m) {
+    Comm::Neighbors n;
+    n.reserve(m.size());
+    for (auto &[rank, elements] : m)
+      n.push_back(Comm::Neighbor{rank, std::move(elements)});
+    return n;
+  };
+  de.myCpys = to_neighbors(cpys);
+  de.mySrcs = to_neighbors(srcs);
+}
+
+//! Carry `src`'s subsets through, dropping what this rank does not hold
+void filter_subsets(
+    SOA_Idx::Entity const &se, SOA_Idx::Entity &de, Renumber const &g2l) {
+  de.subsets.clear();
+  for (auto const &s : se.subsets) {
+    SOA_Idx::Entity::Subset out;
+    out.name = s.name;
+    /* Sorting by the new index is what keeps the subset's own locals ahead of
+       its ghosts, which is what `lsize` means.  On a serial input, where no
+       subset has a ghost in it, this leaves the order alone. */
+    std::vector<std::pair<int, short>> kept;
+    for (std::size_t i = 0; i < s.elements.size(); ++i) {
+      int const l = g2l[s.elements[i]];
+      if (l >= 0)
+        kept.emplace_back(l, i < s.mask.size() ? s.mask[i] : short{1});
+    }
+    std::ranges::sort(kept);
+    for (auto const &[l, m] : kept) {
+      out.elements.push_back(l);
+      out.mask.push_back(m);
+    }
+    out.lsize = static_cast<int>(std::ranges::count_if(
+        out.elements, [&de](int l) { return l < de.local_size(); }));
+    de.subsets.push_back(std::move(out));
+  }
+}
+
+} // namespace
+
+void extract(SOA_Idx::Mesh const &src, Decomposition const &d, int pe,
+    SOA_Idx::Mesh &dst) {
+  if (pe < 0 || pe >= d.nparts)
+    throw std::out_of_range("extract: rank " + std::to_string(pe) +
+        " is not one of the " + std::to_string(d.nparts) + " parts");
+
+  dst.ivtag = src.ivtag;
+  dst.version_header = src.version_header;
+  dst.mype = pe;
+  dst.numpe = d.nparts;
+  dst.geo = src.geo;
+  dst.dump_iotas = src.dump_iotas;
+
+  /* `resize` is virtual and sizes the stored maps as well as the masks, so
+     nothing below may run before all seven have been sized. */
+  struct Kind {
+    SOA_Idx::Entity const *se;
+    SOA_Idx::Entity *de;
+    Entity_Layout const *layout;
+    bool shared;
+  };
+  Kind const kinds[] = {{&src.points, &dst.points, &d.points, true},
+      {&src.edges, &dst.edges, &d.edges, true},
+      {&src.faces, &dst.faces, &d.faces, true},
+      {&src.zones, &dst.zones, &d.zones, false},
+      {&src.corners, &dst.corners, &d.corners, false},
+      {&src.sides, &dst.sides, &d.sides, false},
+      {&src.iotas, &dst.iotas, &d.iotas, false}};
+  for (Kind const &k : kinds) {
+    int const nl = k.layout->local_size(pe), ng = k.layout->ghost_local_size(pe);
+    k.de->resize(nl, nl + ng, ng);
+  }
+  for (Kind const &k : kinds)
+    fill_common(
+        *k.se, *k.de, *k.layout, pe, k.shared, k.shared || d.opt.ghost_entity_comm);
+
+  Renumber const p{d.points, pe, src.points.size()};
+  Renumber const e{d.edges, pe, src.edges.size()};
+  Renumber const f{d.faces, pe, src.faces.size()};
+  Renumber const z{d.zones, pe, src.zones.size()};
+  Renumber const c{d.corners, pe, src.corners.size()};
+  Renumber const s{d.sides, pe, src.sides.size()};
+  Renumber const a{d.iotas, pe, src.iotas.size()};
+
+  //! Copy `name` from `src`, renumbering each entry through `to`
+  auto remap = [&](char const *name, Renumber const &from, Renumber const &to,
+                   char const *what, int n) {
+    auto const &in = src.ds->caccess_intv(name);
+    auto &out = dst.ds->access_intv(name);
+    for (int g = 0; g < n; ++g) {
+      int const l = from[g];
+      if (l >= 0)
+        out[static_cast<std::size_t>(l)] =
+            to.require(in[static_cast<std::size_t>(g)], what, g);
+    }
+  };
+
+  int const pll = src.points.size(), ell = src.edges.size();
+  int const fll = src.faces.size(), cll = src.corners.size();
+  int const sll = src.sides.size(), all = src.iotas.size();
+
+  {
+    auto const &in = src.ds->caccess_vec3v("pcoord");
+    auto &out = dst.ds->access_vec3v("pcoord");
+    for (int g = 0; g < pll; ++g)
+      if (p[g] >= 0)
+        out[static_cast<std::size_t>(p[g])] = in[static_cast<std::size_t>(g)];
+  }
+
+  remap("m:e>p1", e, p, "m:e>p1", ell);
+  remap("m:e>p2", e, p, "m:e>p2", ell);
+
+  /* `m:f>z1/z2` is the one map allowed to dangle: -1 means "no zone on that
+     side of this face", which is what a cut face looks like when there is no
+     ghost layer to resolve it to.  Which of the two was z1 is preserved. */
+  for (char const *name : {"m:f>z1", "m:f>z2"}) {
+    auto const &in = src.ds->caccess_intv(name);
+    auto &out = dst.ds->access_intv(name);
+    for (int g = 0; g < fll; ++g)
+      if (f[g] >= 0)
+        out[static_cast<std::size_t>(f[g])] = z[in[static_cast<std::size_t>(g)]];
+  }
+
+  remap("m:c>p", c, p, "m:c>p", cll);
+  remap("m:c>z", c, z, "m:c>z", cll);
+
+  remap("m:s>z", s, z, "m:s>z", sll);
+  remap("m:s>f", s, f, "m:s>f", sll);
+  remap("m:s>e", s, e, "m:s>e", sll);
+  remap("m:s>p1", s, p, "m:s>p1", sll);
+  remap("m:s>p2", s, p, "m:s>p2", sll);
+  remap("m:s>c1", s, c, "m:s>c1", sll);
+  remap("m:s>c2", s, c, "m:s>c2", sll);
+
+  /*! The side-to-side maps are the only ones that can leave this rank.  A
+      ghost side's `m:s>s5` is on a face of the ghost zone we did not import,
+      and with `Ghost_Depth::NONE` a cut side's `m:s>s2` has nothing to pair
+      with at all.  Both become self-references, which is what the library
+      already uses for "no partner": every `Auditor::connectivity` check on
+      these maps gates on `usable()`, which a ghost side fails, and the
+      `NONE` case is the audit failure that makes it diagnostic-only. */
+  for (char const *name : {"m:s>s2", "m:s>s3", "m:s>s4", "m:s>s5"}) {
+    auto const &in = src.ds->caccess_intv(name);
+    auto &out = dst.ds->access_intv(name);
+    for (int g = 0; g < sll; ++g) {
+      int const l = s[g];
+      if (l < 0)
+        continue;
+      int const partner = s[in[static_cast<std::size_t>(g)]];
+      out[static_cast<std::size_t>(l)] = (partner >= 0) ? partner : l;
+    }
+  }
+
+  if (all > 0) {
+    remap("m:a>z", a, z, "m:a>z", all);
+    remap("m:a>f", a, f, "m:a>f", all);
+    remap("m:a>p", a, p, "m:a>p", all);
+    remap("m:a>e", a, e, "m:a>e", all);
+    remap("m:a>s", a, s, "m:a>s", all);
+  }
+
+  if (d.opt.split_subsets) {
+    filter_subsets(src.points, dst.points, p);
+    filter_subsets(src.edges, dst.edges, e);
+    filter_subsets(src.faces, dst.faces, f);
+    filter_subsets(src.zones, dst.zones, z);
+    filter_subsets(src.corners, dst.corners, c);
+    filter_subsets(src.sides, dst.sides, s);
+    filter_subsets(src.iotas, dst.iotas, a);
+  }
 }
 
 } // namespace Part

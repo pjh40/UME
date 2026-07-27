@@ -64,9 +64,36 @@ Three notes:
   on r" — the two lists have to be compared directly. Getting this wrong is
   easy and the layouts will not complain.
 
-**Next: Phase 1, commit 7** — `extract()`, the big one: renumbering, ghost
-records and neighbor lists are mutually dependent and nothing passes until all
-three are right. Test is the N=1 identity round trip.
+**Phase 1, commit 7 complete.** `extract()` in `Decompose.cc`, plus three
+pre-existing defects it uncovered, one commit each. All three trees green at
+86/86.
+
+| Commit | Fix |
+|---|---|
+| `4fac608` | R8 — `Comm::pack` discarded `std::copy`'s return, so every element of a `VEC3V` field packed over the first one. Every Vec3 gather/scatter was wrong; invisible until a mesh is actually decomposed |
+| `4df2fd2` | R9 — the derived variables built Kokkos Views from `&array[0]`, which aborts on an empty array. An empty partition is a legitimate answer |
+| `f84dd7a` | `split_sorted` put a lone zone in part k/2, stranding part 0, when there were fewer zones than parts |
+
+R8 is the one worth remembering: `point_norm` came out nonzero on interior
+points of a partition, which reads exactly like a partitioning bug and is not
+one. What made it findable was that clearing `myCpys`/`mySrcs` before touching
+`point_norm` made it go away — the accumulation loop was right and the
+gathscat was destroying the answer.
+
+Notes on `extract` itself:
+
+- Every partition of the sweep passes the *full* `mesh_audit` unchanged, and
+  N=1 is bit-identical to the input. The plan's claim that R3 is the only audit
+  change needed held up.
+- The neighbor lists get their positional correspondence for free: both sides
+  build in ascending serial-global order, so `mySrcs[P]` on R and `myCpys[R]`
+  on P are the same set enumerated the same way, with nothing exchanged.
+- Only `m:s>s5` on a ghost side and `m:s>s2` under `Ghost_Depth::NONE` are
+  allowed to dangle; both become self-references. Every other map is required
+  to resolve, and `Renumber::require` throws if it does not.
+
+**Next: Phase 1, commit 8** — `src/partition.cc`, the `ume_partition` driver:
+`--ranks --method --list-methods --audit --no-write`.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

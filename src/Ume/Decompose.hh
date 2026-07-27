@@ -151,6 +151,27 @@ struct Decomposition {
 Decomposition build_decomposition(SOA_Idx::Mesh const &src, Zone_Map z2r,
     int nparts, Decompose_Options const &opt = {});
 
+//! Build rank `pe`'s mesh out of `src` and `d`
+/*! `dst` must be a freshly constructed `Mesh` with a Transport attached: the
+    Datastore's derived variables are initialized lazily and never invalidated,
+    so a mesh that has already been read from is not safe to overwrite.
+
+    Only stored maps are written.  Everything derived -- `m:z>c`, `zcoord`,
+    `point_norm` and the rest -- is left for the Datastore to work out from
+    them, which is also why `Mesh::write` needs nothing else.
+
+    A cut is not a mesh boundary: points on a cut keep their interior mask and
+    no phantom sides are invented for cut faces.  Marking them would make
+    `VAR_point_norm` and the boundary branch of `gradzatp` subtract an outward
+    normal that is not there, and the gradient would be quietly wrong along
+    every partition boundary.
+
+    Throws `std::out_of_range` if `pe` is not a part of `d`, and
+    `std::logic_error` if a map cannot be renumbered -- which means the
+    decomposition and the mesh disagree, not that the input was bad. */
+void extract(SOA_Idx::Mesh const &src, Decomposition const &d, int pe,
+    SOA_Idx::Mesh &dst);
+
 } // namespace Part
 } // namespace Ume
 

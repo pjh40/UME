@@ -23,6 +23,7 @@
 #include "Ume/Decompose.hh"
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Graph.hh"
+#include "Ume/mesh_audit.hh"
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <iterator>
@@ -252,8 +253,8 @@ std::vector<Case> const &cases() {
                s.boundary = Brick::Boundary_Style::PHANTOM_SIDES_ONLY;
                return s;
              }()})
-      for (char const *method : {"linear", "slab-x", "slab-z"})
-        for (int n : {1, 2, 3, 5})
+      for (char const *method : {"linear", "slab-x", "slab-y", "slab-z"})
+        for (int n : {1, 2, 3, 4, 7, 8})
           c.push_back({spec, method, n});
     return c;
   }();
@@ -628,4 +629,83 @@ TEST_CASE("partition: scarce zones fill the low parts", "[partition]") {
         if (mesh.zones.mask[z] >= 1)
           CHECK(z2r[static_cast<std::size_t>(z)] == 0);
     }
+}
+/* ------------------------------- extraction ------------------------------- */
+
+TEST_CASE("extract: one part reproduces the input mesh", "[partition]") {
+  /* With the `(is_ghost, global index)` ordering rule the one-rank map is the
+     identity, so this compares every stored array of a real mesh against
+     itself through the whole renumbering path -- the cheapest test available
+     that a map was not quietly permuted, and the reason `Mesh::operator==`
+     had to learn about faces first. */
+  for (Case const &c : cases()) {
+    if (c.nparts != 1)
+      continue;
+    INFO(c.describe());
+    Mesh mesh;
+    Part::Decomposition const d = decompose(mesh, c);
+
+    Mesh part;
+    Ume::attach_serial_transport(part);
+    Part::extract(mesh, d, 0, part);
+
+    CHECK(part.numpe == 1);
+    CHECK(part.mype == 0);
+    CHECK(part == mesh);
+  }
+}
+
+TEST_CASE("extract: every partition passes the mesh audit", "[partition]") {
+  for (Case const &c : cases()) {
+    INFO(c.describe());
+    Mesh mesh;
+    Part::Decomposition const d = decompose(mesh, c);
+    for (int r = 0; r < c.nparts; ++r) {
+      INFO("rank " << r);
+      Mesh part;
+      Ume::attach_serial_transport(part);
+      Part::extract(mesh, d, r, part);
+      std::ostringstream report;
+      bool const ok = SOA_Idx::audit(part, report, SOA_Idx::Audit_Options{}).ok();
+      INFO(report.str());
+      CHECK(ok);
+    }
+  }
+}
+
+TEST_CASE("extract: degenerate part counts still produce valid meshes",
+    "[partition]") {
+  /* One cell, and more parts than there are zones to fill them.  An empty
+     part is a real outcome of asking for more ranks than the mesh can feed,
+     and it has to come out as a well-formed empty mesh rather than a crash. */
+  Brick::Spec spec;
+  spec.nx = spec.ny = spec.nz = 1;
+
+  for (int nparts : {1, 2, 8}) {
+    INFO("nparts " << nparts);
+    Mesh mesh;
+    brick(spec, mesh);
+    Part::Options opt;
+    opt.nparts = nparts;
+    Part::Zone_Map z2r;
+    Part::make("slab-x")->assign(mesh, opt, z2r);
+    Part::Decomposition const d =
+        Part::build_decomposition(mesh, std::move(z2r), nparts);
+
+    int empty = 0;
+    for (int r = 0; r < nparts; ++r) {
+      INFO("rank " << r);
+      Mesh part;
+      Ume::attach_serial_transport(part);
+      Part::extract(mesh, d, r, part);
+      if (part.zones.size() == 0)
+        empty += 1;
+      std::ostringstream report;
+      bool const ok =
+          SOA_Idx::audit(part, report, SOA_Idx::Audit_Options{}).ok();
+      INFO(report.str());
+      CHECK(ok);
+    }
+    CHECK(empty == nparts - 1);
+  }
 }
