@@ -20,9 +20,34 @@
   should have filenames of the form '<basename>.<pe>.ume', where <basename> is
   an arbitray string provided on the command line, and <pe> is a rank number
   with a printf format of "%05d" (zero-filled, five digits)
+
+  ### Comparing a partitioned run against a serial one
+
+  `--dump-grad` and `--compare` together answer the question a decomposition
+  cannot answer about itself: does the mesh it produced still compute the same
+  physics?  Everything else in the suite checks that a partition is *well
+  formed* -- the audit, the cross-rank check, the round trip -- and a
+  decomposition can be all of those and still be wrong.
+
+  A one-rank partition is bit-identical to the mesh it came from, so
+  `mpiexec -n 1 ume_mpi --dump-grad ref` *is* the serial answer, computed by
+  this same binary along this same code path.  That removes the need for a
+  second reference implementation, and for `ume_serial` to grow anything.
+
+  The one thing a rank cannot do locally is agree with the reference about
+  which zone to perturb: "the middle interior zone" names a different zone
+  in every decomposition.  So the reference records the *serial* index of the
+  zone it spiked, `--compare` reads it back, and each rank finds that zone
+  through its `.gid` side-car -- which is also what lines the answers up zone
+  for zone afterwards.
+
+  The tolerance is relative and is not zero.  Partitioning genuinely reorders
+  the accumulation in `gradzatz`, so the answers agree to roundoff rather than
+  to the bit; `test_brick.cc`'s exact comparison would be the wrong test here.
 */
 
 #include "Ume/Comm_MPI.hh"
+#include "Ume/Global_Ids.hh"
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/Timer.hh"
 #include "Ume/face_area.hh"
@@ -33,8 +58,10 @@
 #include <algorithm>
 #include <cassert>
 #include <charconv>
-#include <format>
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <string>
@@ -49,7 +76,260 @@ using VEC3_T = typename Ume::DS_Types::VEC3_T;
 
 namespace {
 
-bool read_mesh(char const *const basename, int const mype, Mesh &mesh);
+struct Options {
+  std::string basename;
+  std::size_t iterations{1};
+  //! Write the zone gradients of this run out as a reference
+  std::string dump_grad;
+  //! Check the zone gradients of this run against a reference
+  std::string compare;
+  //! Allowed error, relative to the largest gradient in the reference
+  double tol{1e-12};
+};
+
+//! One reference run's zone gradients, keyed by serial zone index
+struct Reference {
+  int spike_gid{-1};
+  std::map<int, VEC3_T> zgrad;
+  //! The largest gradient magnitude anywhere in the reference
+  double scale{0.0};
+};
+
+void usage(std::ostream &os) {
+  os << R"(Usage: ume_mpi [options] <basename>
+
+Reads <basename>.NNNNN.ume on each rank and takes a zone-centered gradient.
+
+Options:
+  -i N               Repeat each timed kernel N times [1]
+  --dump-grad FILE   Write this run's zone gradients to FILE as a reference.
+                     Only meaningful on one rank, where the partition is the
+                     serial mesh; requires <basename>.NNNNN.gid.
+  --compare FILE     Spike the zone FILE says it spiked, and check this run's
+                     zone gradients against it.  Requires the .gid side-car.
+  --tol F            Error allowed by --compare, relative to the largest
+                     gradient in the reference [1e-12]
+  -h, --help         This message
+)";
+}
+
+double norm(VEC3_T const &v) { return std::sqrt(dotprod(v, v)); }
+
+template <typename T> bool parse(std::string_view text, T &out) {
+  auto const last = text.data() + text.size();
+  auto const [ptr, ec] = std::from_chars(text.data(), last, out);
+  return ec == std::errc{} && ptr == last;
+}
+
+//! Returns false, having said why, if the command line does not make sense
+bool parse_args(int argc, char *argv[], int numpe, Options &opt) {
+  for (int i = 1; i < argc; ++i) {
+    std::string_view const arg{argv[i]};
+    auto next = [&](char const *what) -> std::string_view {
+      if (i + 1 >= argc) {
+        std::cerr << "ume_mpi: " << what << " requires an argument\n";
+        std::exit(2);
+      }
+      return std::string_view{argv[++i]};
+    };
+
+    if (arg == "-h" || arg == "--help") {
+      usage(std::cout);
+      std::exit(0);
+    } else if (arg == "-i") {
+      if (!parse(next("-i"), opt.iterations)) {
+        std::cerr << "ume_mpi: -i wants a count\n";
+        return false;
+      }
+    } else if (arg == "--dump-grad") {
+      opt.dump_grad = next("--dump-grad");
+    } else if (arg == "--compare") {
+      opt.compare = next("--compare");
+    } else if (arg == "--tol") {
+      if (!parse(next("--tol"), opt.tol)) {
+        std::cerr << "ume_mpi: --tol wants a number\n";
+        return false;
+      }
+    } else if (arg.starts_with("-") && arg.size() > 1) {
+      std::cerr << "ume_mpi: unknown option \"" << arg << "\"\n";
+      return false;
+    } else if (opt.basename.empty()) {
+      opt.basename = arg;
+    } else {
+      std::cerr << "ume_mpi: one mesh basename, not two\n";
+      return false;
+    }
+  }
+
+  if (opt.basename.empty()) {
+    usage(std::cerr);
+    return false;
+  }
+  if (!opt.dump_grad.empty() && !opt.compare.empty()) {
+    std::cerr << "ume_mpi: --dump-grad and --compare are two different runs\n";
+    return false;
+  }
+  /* A reference has to be the whole answer.  On several ranks each one holds
+     a part of it, and gathering them would be a second, unchecked code path
+     for producing something we already get for free at -n 1. */
+  if (!opt.dump_grad.empty() && numpe != 1) {
+    std::cerr << "ume_mpi: --dump-grad wants one rank, so that the partition "
+                 "it reads is the serial mesh; this run has "
+              << numpe << '\n';
+    return false;
+  }
+  return true;
+}
+
+bool read_mesh(std::string const &basename, int const mype, Mesh &mesh) {
+  std::string const fname = Ume::mesh_filename(basename, mype);
+  std::ifstream is(fname);
+  if (!is) {
+    std::cerr << "Unable to open file \"" << fname << "\" for reading."
+              << std::endl;
+    return false;
+  }
+  mesh.read(is);
+  is.close();
+  if (!is) {
+    std::cerr << "Unable to read a mesh from file \"" << fname << "\"."
+              << std::endl;
+    return false;
+  }
+  return true;
+}
+
+//! What this rank's zones were called in the mesh the partition came from
+bool read_zone_gids(std::string const &basename, int const mype,
+    Mesh const &mesh, std::vector<int> &zgid) {
+  std::string const fname = Ume::Part::rank_file(basename, mype, "gid");
+  std::ifstream is(fname);
+  if (!is) {
+    std::cerr << "Unable to open file \"" << fname << "\" for reading.  Write "
+              << "it with `ume_partition --global-ids`." << std::endl;
+    return false;
+  }
+  try {
+    Ume::Part::Global_Ids const g = Ume::Part::read_global_ids(is);
+    Ume::Part::Kind_Ids const &zones = g[Ume::Part::ZONE];
+    /* A side-car from a different partitioning would name the wrong zones
+       without ever being the wrong shape, so the sizes are worth checking. */
+    if (g.mype != mype || zones.local != mesh.zones.local_size() ||
+        zones.gid.size() != static_cast<std::size_t>(mesh.zones.size())) {
+      std::cerr << "\"" << fname << "\" does not describe this mesh."
+                << std::endl;
+      return false;
+    }
+    zgid = zones.gid;
+  } catch (std::exception const &e) {
+    std::cerr << "\"" << fname << "\": " << e.what() << std::endl;
+    return false;
+  }
+  return true;
+}
+
+bool write_reference(std::string const &path, Mesh const &mesh,
+    std::vector<int> const &zgid, int const spike, VEC3V_T const &zgrad) {
+  std::ofstream os(path);
+  if (!os) {
+    std::cerr << "Unable to open file \"" << path << "\" for writing."
+              << std::endl;
+    return false;
+  }
+
+  std::vector<int> real;
+  for (int z = 0; z < mesh.zones.local_size(); ++z)
+    if (mesh.zones.mask[static_cast<std::size_t>(z)] >= 1)
+      real.push_back(z);
+
+  os << "ume_grad 1\n";
+  os << "spike " << zgid[static_cast<std::size_t>(spike)] << '\n';
+  os << "zones " << real.size() << '\n';
+  /* 17 significant digits is what a double round trips through decimal in,
+     so the reference is exact and only the comparison has a tolerance. */
+  os << std::scientific << std::setprecision(17);
+  for (int const z : real) {
+    VEC3_T const &g = zgrad[static_cast<std::size_t>(z)];
+    os << zgid[static_cast<std::size_t>(z)] << ' ' << g[0] << ' ' << g[1] << ' '
+       << g[2] << '\n';
+  }
+  return static_cast<bool>(os);
+}
+
+bool read_reference(std::string const &path, Reference &ref) {
+  std::ifstream is(path);
+  if (!is) {
+    std::cerr << "Unable to open file \"" << path << "\" for reading."
+              << std::endl;
+    return false;
+  }
+
+  std::string tok;
+  int version{}, nzones{};
+  if (!(is >> tok >> version) || tok != "ume_grad" || version != 1) {
+    std::cerr << "\"" << path << "\" is not a version 1 gradient reference."
+              << std::endl;
+    return false;
+  }
+  if (!(is >> tok >> ref.spike_gid) || tok != "spike" ||
+      !(is >> tok >> nzones) || tok != "zones") {
+    std::cerr << "\"" << path << "\" has a malformed header." << std::endl;
+    return false;
+  }
+
+  for (int i = 0; i < nzones; ++i) {
+    int gid{};
+    VEC3_T g;
+    if (!(is >> gid >> g[0] >> g[1] >> g[2])) {
+      std::cerr << "\"" << path << "\" ends after " << i << " of " << nzones
+                << " zones." << std::endl;
+      return false;
+    }
+    ref.zgrad.emplace(gid, g);
+    ref.scale = std::max(ref.scale, norm(g));
+  }
+  return true;
+}
+
+//! Check this rank's real zones against the reference; returns the mismatches
+/*! Only the zones this rank holds are checked, because only those are the
+    ones it computed.  That the ranks between them cover every zone of the
+    serial mesh is what `check_partitions` establishes, so it is not
+    re-established here. */
+int compare_reference(Reference const &ref, Mesh const &mesh,
+    std::vector<int> const &zgid, VEC3V_T const &zgrad, double const tol,
+    std::ostream &os) {
+  double const allowed = tol * ref.scale;
+  int bad = 0, checked = 0;
+  double worst = 0.0;
+
+  for (int z = 0; z < mesh.zones.local_size(); ++z) {
+    if (mesh.zones.mask[static_cast<std::size_t>(z)] < 1)
+      continue;
+    int const gid = zgid[static_cast<std::size_t>(z)];
+    auto const it = ref.zgrad.find(gid);
+    if (it == ref.zgrad.end()) {
+      os << "PE" << mesh.mype << " zone " << z << " (global " << gid
+         << ") is not in the reference\n";
+      bad += 1;
+      continue;
+    }
+    checked += 1;
+    double const err = norm(zgrad[static_cast<std::size_t>(z)] - it->second);
+    worst = std::max(worst, err);
+    if (err > allowed) {
+      os << "PE" << mesh.mype << " zone " << z << " (global " << gid
+         << "): " << zgrad[static_cast<std::size_t>(z)] << " vs. " << it->second
+         << ", off by " << err << '\n';
+      bad += 1;
+    }
+  }
+
+  os << "PE" << mesh.mype << ": " << checked << " zones compared, worst error "
+     << worst << " of " << allowed << " allowed" << std::endl;
+  return bad;
+}
+
 // Unused: its call in main is commented out.
 [[maybe_unused]] bool test_point_gathscat(Mesh &mesh);
 void check_gradzatz_diffs(Mesh const &mesh, int const &centered_zone_index,
@@ -65,56 +345,23 @@ int main(int argc, char *argv[]) {
   /* Initialize MPI and instantiate the MPI Transport. */
   Ume::Comm::MPI comm(&argc, &argv);
 
+  /* Every rank sees the same command line, so a usage error is the same
+     usage error everywhere and no rank is left waiting on another. */
+  Options opt;
+  if (!parse_args(argc, argv, comm.numpe(), opt))
+    return EXIT_FAILURE;
+  size_t const ic = opt.iterations;
+  bool const referencing = !opt.dump_grad.empty() || !opt.compare.empty();
+
+  Reference ref;
+  if (!opt.compare.empty() && !read_reference(opt.compare, ref)) {
+    std::cerr << "Aborting." << std::endl;
+    return EXIT_FAILURE;
+  }
+
   /* Initialize Kokkos and the memory pool. This should happen right
    * after the call to MPI_Init for best performance. */
   Ume::initialize(argc, argv);
-
-  constexpr std::string_view usage{"Usage: ume_mpi <basename> [-i <count>]"};
-
-  /* After Ume::initialize, which takes argc by reference and strips the
-     --kokkos-* arguments: `ume_mpi --kokkos-num-threads=4` has a basename
-     before that call and none after it. */
-  if (argc < 2) {
-    if (comm.pe() == 0)
-      std::cerr << usage << std::endl;
-    comm.abort("no mesh basename was given");
-    return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
-  }
-
-  /* Everything after the basename has to be "-i <count>".  Checked before the
-     mesh is read, so that a mistyped command line fails before a read that can
-     take minutes rather than after it. */
-  size_t ic = 1; // iteration count when -i is not given
-  if (argc > 2) {
-    std::string_view const flag{argv[2]};
-    std::string problem;
-    if (flag != "-i")
-      problem = std::format("unexpected argument \"{}\"", flag);
-    else if (argc == 3)
-      problem = "-i needs an iteration count";
-    else if (argc > 4)
-      problem = std::format("unexpected argument \"{}\"", argv[4]);
-    if (!problem.empty()) {
-      if (comm.pe() == 0)
-        std::cerr << "ume_mpi: " << problem << '\n' << usage << std::endl;
-      comm.abort("invalid arguments");
-      return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
-    }
-
-    /* from_chars into a size_t refuses a sign, so "-1" is an error rather
-       than SIZE_MAX iterations, and the whole argument has to be the number. */
-    std::string_view const arg{argv[3]};
-    auto const [end, ec] =
-        std::from_chars(arg.data(), arg.data() + arg.size(), ic);
-    if (ec != std::errc{} || end != arg.data() + arg.size()) {
-      if (comm.pe() == 0)
-        std::cerr << "ume_mpi: the iteration count after -i has to be a "
-                     "non-negative integer, got \""
-                  << arg << '"' << std::endl;
-      comm.abort("invalid iteration count");
-      return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
-    }
-  }
 
   /* Create a mesh instance and attach the communicator to the mesh. */
   Mesh mesh;
@@ -127,9 +374,17 @@ int main(int argc, char *argv[]) {
      whole job down: returning here would leave the other ranks waiting in the
      gathscat below, which hangs, or is killed by the launcher, rather than
      fails. */
-  if (!read_mesh(argv[1], comm.pe(), mesh)) {
+  if (!read_mesh(opt.basename, comm.pe(), mesh)) {
     comm.abort("this rank could not read its mesh file");
     return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
+  }
+
+  /* The side-car is read only when something is going to use it, so an
+     ordinary run still needs nothing but the .ume files. */
+  std::vector<int> zgid;
+  if (referencing && !read_zone_gids(opt.basename, comm.pe(), mesh, zgid)) {
+    std::cerr << "Aborting." << std::endl;
+    return EXIT_FAILURE;
   }
 
   /* This allows us to attach a debugger to a single rank specified in the
@@ -177,22 +432,41 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
   }
 
-  /* The middle interior zone, located by counting rather than by building the
-     list of them: on a production rank that list would be millions of ints,
-     held only to read one of them. */
+  /* Under --compare the zone to spike is not this rank's to choose: the two
+     runs have to perturb the same zone of the *serial* mesh, and only one
+     rank of this run holds it.  Everywhere else czi is -1 and this rank
+     simply contributes its share of a gradient it did not source. */
   int czi = -1;
-  for (int z = 0, seen = 0; z < zl; ++z) {
-    if (is_interior(kztyp[z]) && seen++ == num_interior / 2) {
-      czi = z;
-      break;
+  if (!opt.compare.empty()) {
+    for (int z = 0; z < zl; ++z)
+      if (zgid[static_cast<std::size_t>(z)] == ref.spike_gid &&
+          is_interior(kztyp[z])) {
+        czi = z;
+        break;
+      }
+    if (czi >= 0)
+      std::cout << "PE" << comm.pe() << " holds the reference's zone "
+                << ref.spike_gid << " at index " << czi << std::endl;
+  } else {
+    /* The middle interior zone, located by counting rather than by building
+       the list of them: on a production rank that list would be millions of
+       ints, held only to read one of them. */
+    for (int z = 0, seen = 0; z < zl; ++z) {
+      if (is_interior(kztyp[z]) && seen++ == num_interior / 2) {
+        czi = z;
+        break;
+      }
     }
+    assert(czi >= 0);
   }
-  assert(czi >= 0);
 
   /* Create a zone-field that is everywhere zero but in the centered
-   * zone at index czi. */
+   * zone at index czi.  Ghost zones are left at zero even where they shadow
+   * the spiked one: `gradzatz` reads the field only through corners with
+   * `mask >= 1`, and a ghost zone has none. */
   DBLV_T zfield(mesh.zones.size(), 0.0);
-  zfield[czi] = 100000.0;
+  if (czi >= 0)
+    zfield[czi] = 100000.0;
 
   if (comm.pe() == 0)
     std::cout << "Computing zone-centered gradient..." << std::endl;
@@ -225,8 +499,26 @@ int main(int argc, char *argv[]) {
     std::cout << "Checking gradient result..." << std::endl;
   }
 
-  /* Double check that the gradients are non-zero where we expect */
-  check_gradzatz_diffs(mesh, czi, zgrad, zgrad_invert, pgrad, pgrad_invert);
+  /* Double check that the gradients are non-zero where we expect.  This is
+     stated in terms of the spiked zone's neighborhood, so it has nothing to
+     say on a rank that does not hold the spiked zone. */
+  if (czi >= 0)
+    check_gradzatz_diffs(mesh, czi, zgrad, zgrad_invert, pgrad, pgrad_invert);
+
+  int status = EXIT_SUCCESS;
+  if (!opt.dump_grad.empty()) {
+    if (write_reference(opt.dump_grad, mesh, zgid, czi, zgrad))
+      std::cout << "Wrote the reference gradients to \"" << opt.dump_grad
+                << "\"" << std::endl;
+    else
+      status = EXIT_FAILURE;
+  } else if (!opt.compare.empty()) {
+    /* Every rank runs this and every rank returns its own verdict: mpiexec
+       fails the job if any one of them does, and no rank leaves early, so
+       nothing is left waiting in a collective. */
+    if (compare_reference(ref, mesh, zgid, zgrad, opt.tol, std::cout) > 0)
+      status = EXIT_FAILURE;
+  }
 
   if (comm.pe() == 0)
     std::cout << "Computing face areas..." << std::endl;
@@ -274,28 +566,10 @@ int main(int argc, char *argv[]) {
 
   Ume::finalize();
   comm.stop();
-  return EXIT_SUCCESS;
+  return status;
 }
 
 namespace {
-
-bool read_mesh(char const *const basename, int const mype, Mesh &mesh) {
-  std::string const fname = Ume::mesh_filename(basename, mype);
-  std::ifstream is(fname);
-  if (!is) {
-    std::cerr << "Unable to open file \"" << fname << "\" for reading."
-              << std::endl;
-    return false;
-  }
-  mesh.read(is);
-  is.close();
-  if (!is) {
-    std::cerr << "Unable to read a mesh from file \"" << fname << "\"."
-              << std::endl;
-    return false;
-  }
-  return true;
-}
 
 bool test_point_gathscat(Mesh &mesh) {
   int const mype = mesh.comm->id();

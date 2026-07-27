@@ -795,7 +795,8 @@ add_test(NAME partition_gen_brick
 set_tests_properties(partition_gen_brick PROPERTIES FIXTURES_SETUP brick)
 
 add_test(NAME partition_split
-  COMMAND ume_partition --ranks 3 --method slab-x --audit brick.ume part
+  COMMAND ume_partition --ranks 3 --method slab-x --audit --global-ids
+          brick.ume part
   WORKING_DIRECTORY ${PARTITION_WORKDIR})
 set_tests_properties(partition_split PROPERTIES
   FIXTURES_REQUIRED brick FIXTURES_SETUP parts)
@@ -875,6 +876,45 @@ if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
             part
     WORKING_DIRECTORY ${PARTITION_WORKDIR})
   set_tests_properties(partition_mpi_run PROPERTIES FIXTURES_REQUIRED parts)
+
+  #########################################################################
+  # Does a partitioned run still compute the same physics?
+  #########################################################################
+  # Everything above establishes that a partition is well formed.  A
+  # decomposition can be all of that and still be wrong, and this is the only
+  # test that would notice: it runs the gradient on 3 ranks and compares it,
+  # zone for zone, against the answer the same binary gets on one.
+  #
+  # A one-rank partition is bit-identical to its input, so the reference needs
+  # no second code path and no serial driver -- but it does need a --ranks 1
+  # split of its own, because the reference and the run under test have to be
+  # two decompositions of one mesh rather than one decomposition read twice.
+
+  add_test(NAME partition_split_reference
+    COMMAND ume_partition --ranks 1 --method linear --global-ids
+            brick.ume ref
+    WORKING_DIRECTORY ${PARTITION_WORKDIR})
+  set_tests_properties(partition_split_reference PROPERTIES
+    FIXTURES_REQUIRED brick FIXTURES_SETUP refpart)
+
+  add_test(NAME partition_mpi_reference
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1
+            ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ume_mpi> ${MPIEXEC_POSTFLAGS}
+            ref --dump-grad zgrad.ref
+    WORKING_DIRECTORY ${PARTITION_WORKDIR})
+  set_tests_properties(partition_mpi_reference PROPERTIES
+    FIXTURES_REQUIRED refpart FIXTURES_SETUP zgradref)
+
+  # The tolerance is relative and is not zero: partitioning reorders the
+  # accumulation in gradzatz, so the two runs agree to roundoff rather than to
+  # the bit, and test_brick.cc's exact comparison would be the wrong test.
+  add_test(NAME partition_mpi_compare
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3
+            ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ume_mpi> ${MPIEXEC_POSTFLAGS}
+            part --compare zgrad.ref --tol 1e-12
+    WORKING_DIRECTORY ${PARTITION_WORKDIR})
+  set_tests_properties(partition_mpi_compare PROPERTIES
+    FIXTURES_REQUIRED "parts;zgradref")
 else()
   message(STATUS "Tests: no MPI, so multi-rank tests are not registered")
 endif()

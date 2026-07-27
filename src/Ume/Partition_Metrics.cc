@@ -137,12 +137,6 @@ long cut_face_points(Mesh const &src, std::vector<Face_Cut> const &cuts) {
 
 } // namespace
 
-char const *kind_name(int const kind) {
-  constexpr char const *NAMES[NKINDS]{
-      "point", "edge", "face", "zone", "corner", "side", "iota"};
-  return (kind >= 0 && kind < NKINDS) ? NAMES[kind] : "?";
-}
-
 long Metrics::total_comm_elems() const {
   long total = 0;
   for (long const n : comm_matrix)

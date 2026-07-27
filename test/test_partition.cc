@@ -21,6 +21,7 @@
 
 #include "Ume/Brick_Mesh.hh"
 #include "Ume/Decompose.hh"
+#include "Ume/Global_Ids.hh"
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Graph.hh"
 #include "Ume/Partition_Metrics.hh"
@@ -34,6 +35,7 @@
 #include <set>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 using namespace Ume;
@@ -713,6 +715,85 @@ TEST_CASE("extract: degenerate part counts still produce valid meshes",
     }
     CHECK(empty == nparts - 1);
   }
+}
+
+/* --------------------------- the global-id side-car ----------------------- */
+
+TEST_CASE("global ids: the side-car round trips", "[partition]") {
+  /* The side-car is the only record of what a partition's entities used to be
+     called -- a `.ume` file has nowhere to put it -- so a run comparing itself
+     against a serial one is trusting this file completely.  What is checked
+     here is that it survives the trip through text and still agrees with the
+     layouts it came from, kind by kind and rank by rank. */
+  for (Case const &c : cases()) {
+    INFO(c.describe());
+    Mesh mesh;
+    Part::Decomposition const d = decompose(mesh, c);
+    auto const layouts = d.layouts();
+
+    for (int r = 0; r < c.nparts; ++r) {
+      INFO("rank " << r);
+      std::ostringstream out;
+      Part::write_global_ids(d, r, out);
+      std::istringstream in(out.str());
+      Part::Global_Ids const g = Part::read_global_ids(in);
+
+      CHECK(g.mype == r);
+      CHECK(g.numpe == c.nparts);
+      for (int k = 0; k < Part::NKINDS; ++k) {
+        INFO(Part::kind_name(k));
+        Part::Entity_Layout const &l = *layouts[static_cast<std::size_t>(k)];
+        Part::Kind_Ids const &ids = g[k];
+        REQUIRE(ids.local == l.local_size(r));
+        REQUIRE(ids.ghost() == l.ghost_local_size(r));
+        for (int i = 0; i < static_cast<int>(ids.gid.size()); ++i)
+          REQUIRE(ids.gid[static_cast<std::size_t>(i)] == l.global_index(r, i));
+      }
+    }
+  }
+}
+
+TEST_CASE("global ids: one part is the identity", "[partition]") {
+  /* The same property `extract: one part reproduces the input mesh` rests on,
+     seen from the side-car: at one rank nothing is renumbered, so a reference
+     run reads its own zone indices back unchanged and the comparison it
+     anchors is against the serial mesh rather than against a relabeling. */
+  Mesh mesh;
+  Case const c{mixed_spec(), "linear", 1};
+  Part::Decomposition const d = decompose(mesh, c);
+
+  std::ostringstream out;
+  Part::write_global_ids(d, 0, out);
+  std::istringstream in(out.str());
+  Part::Global_Ids const g = Part::read_global_ids(in);
+
+  Part::Kind_Ids const &zones = g[Part::ZONE];
+  REQUIRE(zones.local == mesh.zones.local_size());
+  REQUIRE(zones.ghost() == 0);
+  for (int z = 0; z < zones.local; ++z)
+    REQUIRE(zones.gid[static_cast<std::size_t>(z)] == z);
+}
+
+TEST_CASE("global ids: a truncated side-car is rejected", "[partition]") {
+  /* Reading the wrong file, or a partly written one, has to be an error
+     rather than a short list of plausible indices: the comparison downstream
+     would otherwise line the wrong zones up and disagree about physics. */
+  Mesh mesh;
+  Case const c{mixed_spec(), "slab-x", 3};
+  Part::Decomposition const d = decompose(mesh, c);
+
+  std::ostringstream out;
+  Part::write_global_ids(d, 1, out);
+  std::string const full = out.str();
+
+  std::istringstream truncated(full.substr(0, full.size() / 2));
+  CHECK_THROWS_AS(Part::read_global_ids(truncated), std::runtime_error);
+
+  std::istringstream empty("");
+  CHECK_THROWS_AS(Part::read_global_ids(empty), std::runtime_error);
+
+  std::istringstream wrong("ume_gid 2\n");
+  CHECK_THROWS_AS(Part::read_global_ids(wrong), std::runtime_error);
 }
 
 /* ---------------------------- cross-rank checks --------------------------- */

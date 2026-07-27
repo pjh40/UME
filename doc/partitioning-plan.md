@@ -197,24 +197,48 @@ fired; in a Release build `czi == local_size()` would have silently spiked a
 running `mpiexec -n 2 ume_mpi` on a partitioned brick, which is the first thing
 commit 13 has to do.
 
-**Next: Phase 2, commit 13** — the MPI numerical-equivalence CTest, with the
-global-id side-car and an `ume_mpi` reference-compare option. The guard it needs
-now holds `partition_mpi_run`; commit 13 adds the comparison beside it. The
-shape that survived design review, since a rank cannot pick the spike zone
-locally and still agree with the serial run:
+**Phase 2, commit 13 complete.** `Global_Ids.hh/.cc` (the `<base>.%05d.gid`
+side-car), `ume_partition --global-ids`, `ume_mpi --dump-grad --compare --tol`
+with a real option parser, three Catch2 tests and three CTests. All three trees
+green, 112/112 and 116/116 with MPI.
 
-1. `ume_partition --global-ids` writes `<base>.%05d.gid`, the serial global
-   index of every local entity of every kind.
-2. `mpiexec -n 1 ume_mpi --dump-grad ref` on a `--ranks 1` partition — which is
-   bit-identical to the input, so it *is* the serial answer — records the spike
-   zone's global id in the file header alongside `(gid, zgrad)` per real zone.
-3. `mpiexec -n N ume_mpi --compare ref` reads the spike gid back, so both runs
-   perturb the same zone, and compares its real zones' `zgrad` against the
-   reference. Tolerance relative to the largest reference magnitude; **not**
-   `test_brick.cc`'s `GRAD_TOL == 0.0`, because partitioned accumulation order
-   genuinely differs.
+The shape is the one design review settled on, and it worked unchanged: a
+`--ranks 1` partition is bit-identical to its input, so `mpiexec -n 1 ume_mpi
+--dump-grad` *is* the serial answer computed by the same binary along the same
+code path — no second reference implementation, and no `ume_serial` change.
+`--compare` reads the spike zone's *serial* index back out of the reference, so
+both runs perturb the same zone even though no rank could have picked it
+locally, and the `.gid` side-car lines the answers up zone for zone afterwards.
 
-That needs no `ume_serial` change and no second reference path.
+Four notes:
+
+- **The comparison is the first test that could catch a decomposition that is
+  well formed and still wrong.** The audit, the cross-rank check and the round
+  trip all check bookkeeping. On the sample the worst disagreement is 8e-12
+  against gradients of order 5e4 — a relative 1.6e-16, one ulp — but the
+  tolerance is *relative and nonzero* on purpose: partitioning genuinely
+  reorders the accumulation in `gradzatz`, and `test_brick.cc`'s `GRAD_TOL ==
+  0.0` would be the wrong test here. It was checked to fail, not assumed to:
+  `--tol 0`, a reference whose `spike` line names a different zone, and a
+  missing side-car each exit nonzero.
+- `Kind`/`kind_name`/`is_shared_kind` moved from `Partition_Metrics.hh` down to
+  `Decompose.hh`. The side-car is the third thing to walk the kinds generically
+  and the order is `Decomposition::layouts()`'s to fix, not the metrics'.
+- No MPI reduction is involved and none is needed. Each rank compares the real
+  zones it holds and returns its own verdict; `mpiexec` fails the job if any
+  rank does. That the ranks between them cover every zone of the serial mesh is
+  `check_partitions`'s job, already done, and is not re-established here — but
+  it is visible in the run: 12 + 13 + 9 = 34 real zones on the sample.
+- `--dump-grad` refuses to run on more than one rank rather than gathering.
+  Gathering would be a second, unchecked path to something one rank already
+  produces exactly.
+
+**Phase 2 is complete.** Next is **Phase 3**, the zero-dependency methods:
+`block`/`pencil`/`dims_create`, then `rcb`/`rib`, `morton`/`hilbert`,
+`roundrobin`/`random`, and `bfs` — one commit per group, each dropping into the
+phase 1–2 harness unchanged. `test_partition.cc` already sweeps
+`Part::methods()` rather than a hardcoded list, so a new method joins the audit
+sweep by being registered.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

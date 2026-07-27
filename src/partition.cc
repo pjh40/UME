@@ -18,6 +18,7 @@
 */
 
 #include "Ume/Decompose.hh"
+#include "Ume/Global_Ids.hh"
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Metrics.hh"
 #include "Ume/mesh_audit.hh"
@@ -61,6 +62,10 @@ Options:
                        is new, so that a sweep builds a plottable table
   --comm-matrix FILE   Write the rank-to-rank element counts to FILE, as
                        --ranks comma-separated rows
+  --global-ids         Also write <output-base>.NNNNN.gid, saying what each
+                       local entity was called in the input mesh.  A .ume file
+                       has nowhere to record that, and comparing a partitioned
+                       run against a serial one needs it.
   --audit              Run mesh_audit on each partition before writing
   --check              Check the partitions against each other afterwards.
                        Unlike --audit, this holds every partition in memory.
@@ -91,13 +96,6 @@ void list_methods(std::ostream &os) {
       os << " [unavailable: needs " << m.requires_pkg << ']';
     os << '\n';
   }
-}
-
-//! `<base>.NNNNN.ume`, the naming `txt2bin` already produces
-std::string rank_file(std::string const &base, int pe) {
-  char suffix[16];
-  std::snprintf(suffix, sizeof(suffix), ".%05d.ume", pe);
-  return base + suffix;
 }
 
 bool read_zone_map(std::string const &path, Part::Zone_Map &z2r) {
@@ -131,7 +129,7 @@ int main(int argc, char *argv[]) {
   std::string method{"slab"}, zone_map_in, zone_map_out;
   std::string metrics_csv, comm_matrix_file;
   bool do_audit{false}, do_check{false}, do_write{true}, have_ranks{false};
-  bool do_metrics{false};
+  bool do_metrics{false}, do_global_ids{false};
   std::vector<std::string_view> positional;
 
   for (int i = 1; i < argc; ++i) {
@@ -204,6 +202,8 @@ int main(int argc, char *argv[]) {
       metrics_csv = next("--metrics-csv");
     } else if (arg == "--comm-matrix") {
       comm_matrix_file = next("--comm-matrix");
+    } else if (arg == "--global-ids") {
+      do_global_ids = true;
     } else if (arg == "--audit") {
       do_audit = true;
     } else if (arg == "--check") {
@@ -224,6 +224,12 @@ int main(int argc, char *argv[]) {
   }
   if (positional.size() != (do_write ? 2u : 1u)) {
     usage(std::cerr);
+    return 2;
+  }
+  /* A side-car names the partition it belongs to, so there is nothing for it
+     to sit beside if the partitions are not written. */
+  if (do_global_ids && !do_write) {
+    std::cerr << "ume_partition: --global-ids and --no-write disagree\n";
     return 2;
   }
   std::string const infile{positional[0]};
@@ -359,7 +365,7 @@ int main(int argc, char *argv[]) {
         kept.push_back(std::move(held));
 
       if (do_write && status == 0) {
-        std::string const path = rank_file(outbase, pe);
+        std::string const path = Part::rank_file(outbase, pe, "ume");
         std::ofstream os(path);
         if (!os) {
           std::cerr << "ume_partition: cannot open \"" << path
@@ -380,6 +386,21 @@ int main(int argc, char *argv[]) {
                     << pe << '\n';
           status = 4;
           break;
+        }
+
+        /* The side-car comes out of the decomposition rather than the mesh:
+           the mesh no longer knows what its entities used to be called, which
+           is the whole reason this file exists. */
+        if (do_global_ids) {
+          std::string const gpath = Part::rank_file(outbase, pe, "gid");
+          std::ofstream gos(gpath);
+          if (!gos) {
+            std::cerr << "ume_partition: cannot open \"" << gpath
+                      << "\" for writing\n";
+            status = 3;
+            break;
+          }
+          Part::write_global_ids(d, pe, gos);
         }
       }
     }

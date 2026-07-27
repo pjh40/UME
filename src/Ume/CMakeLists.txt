@@ -17,6 +17,7 @@ set(UME_INCLUDE_FILES
   DS_Types.hh
   Datastore.hh
   Entity_Field.hh
+  Global_Ids.hh
   Mesh_Base.hh
   Decompose.hh
   Partition.hh
@@ -57,6 +58,7 @@ add_library(Ume
   Comm_Transport.cc
   Datastore.cc
   Decompose.cc
+  Global_Ids.cc
   Partition.cc
   Partition_Graph.cc
   Partition_Metrics.cc

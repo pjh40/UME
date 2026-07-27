@@ -125,6 +125,21 @@ struct Entity_Layout {
   int global_index(int r, int l) const;
 };
 
+//! The entity kinds, in the order `Mesh` declares them
+/*! This is the order `Decomposition::layouts()` returns and the order
+    everything that walks the kinds generically -- metrics, the cross-rank
+    check, the global-id side-car -- relies on, so it is declared here beside
+    the thing that fixes it. */
+enum Kind { POINT, EDGE, FACE, ZONE, CORNER, SIDE, IOTA, NKINDS };
+
+//! The singular name of `kind`, for reports and for the side-car
+char const *kind_name(int kind);
+
+//! True if `kind` is duplicated across a cut rather than ghosted over it
+constexpr bool is_shared_kind(int kind) {
+  return kind == POINT || kind == EDGE || kind == FACE;
+}
+
 //! Where everything ended up, for every rank at once
 struct Decomposition {
   int nparts{0};

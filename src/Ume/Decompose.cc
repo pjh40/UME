@@ -24,6 +24,12 @@
 namespace Ume {
 namespace Part {
 
+char const *kind_name(int const kind) {
+  constexpr char const *NAMES[NKINDS]{
+      "point", "edge", "face", "zone", "corner", "side", "iota"};
+  return (kind >= 0 && kind < NKINDS) ? NAMES[kind] : "?";
+}
+
 int Entity_Layout::local_size(int r) const {
   return start[static_cast<std::size_t>(r) + 1] -
       start[static_cast<std::size_t>(r)];

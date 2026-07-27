@@ -56,16 +56,8 @@
 namespace Ume {
 namespace Part {
 
-//! The entity kinds, in the order `Mesh` declares them
-enum Kind { POINT, EDGE, FACE, ZONE, CORNER, SIDE, IOTA, NKINDS };
-
-//! The singular name of `kind`, for reports
-char const *kind_name(int kind);
-
-//! True if `kind` is duplicated across a cut rather than ghosted over it
-constexpr bool is_shared_kind(int kind) {
-  return kind == POINT || kind == EDGE || kind == FACE;
-}
+/* `Kind`, `kind_name` and `is_shared_kind` come from Decompose.hh, which is
+   where the order they name is decided. */
 
 //! How one entity kind spread itself over the ranks
 /*! Every per-rank vector has length `Metrics::nparts`. */
