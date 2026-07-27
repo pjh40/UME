@@ -26,12 +26,6 @@ endif()
 # from src/ and a variable a pkgs/ module set are both visible here on a
 # fresh configure.
 
-if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
-  message(STATUS "Tests: MPI is available (${MPIEXEC_EXECUTABLE})")
-else()
-  message(STATUS "Tests: no MPI, so multi-rank tests are not registered")
-endif()
-
 # UME standard tests
 
 add_executable(ume_tests
@@ -860,3 +854,27 @@ add_test(NAME partition_audit_all
   COMMAND ume_serial --audit part.00000.ume part.00001.ume part.00002.ume
   WORKING_DIRECTORY ${PARTITION_WORKDIR})
 set_tests_properties(partition_audit_all PROPERTIES FIXTURES_REQUIRED parts)
+
+#############################################################################
+# Multi-rank tests
+#############################################################################
+# See the note at the top of this file: a test that cannot run here is not
+# registered, and the guard says so either way.  Gating on the target rather
+# than on USE_MPI is what the target existing actually requires, and it works
+# on a fresh configure only because this directory is added after src/.
+
+if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
+  message(STATUS "Tests: MPI is available (${MPIEXEC_EXECUTABLE})")
+
+  # Everything above reads the partitions back with a serial program.  This
+  # is the first test to hand them to the code they were written for, so it
+  # is also the first thing to run a Transport that really communicates.
+  add_test(NAME partition_mpi_run
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3
+            ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ume_mpi> ${MPIEXEC_POSTFLAGS}
+            part
+    WORKING_DIRECTORY ${PARTITION_WORKDIR})
+  set_tests_properties(partition_mpi_run PROPERTIES FIXTURES_REQUIRED parts)
+else()
+  message(STATUS "Tests: no MPI, so multi-rank tests are not registered")
+endif()

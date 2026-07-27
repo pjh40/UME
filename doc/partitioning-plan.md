@@ -182,9 +182,39 @@ configure prints `Tests: MPI is available (.../mpiexec)`, and a fresh configure
 with MPI off prints the `no MPI` line. Both branches are therefore known-correct
 on a *fresh* tree, which is the case that was broken.
 
+**Phase 2, commit 13's second prerequisite complete.** R10 — `ume_mpi` picked
+its spike zone by scanning *upward from the middle of the whole zone range*, so
+it found nothing on a mesh whose interior zones are all below the midpoint. It
+now takes the middle of the interior zones. `partition_mpi_run` — the first
+CTest under the `TARGET ume_mpi` guard, and the first time any test hands a
+partition to the code it was written for — fails before and passes after. All
+three trees green, 109/109 and 110/110 with MPI.
+
+`gen_brick` is exactly such a mesh: `Builder::make_boundary` appends every
+`mask == -1` zone after every real one. In a Debug build the existing assert
+fired; in a Release build `czi == local_size()` would have silently spiked a
+*ghost* zone, or written past `zfield` on a rank with no ghosts. Found by
+running `mpiexec -n 2 ume_mpi` on a partitioned brick, which is the first thing
+commit 13 has to do.
+
 **Next: Phase 2, commit 13** — the MPI numerical-equivalence CTest, with the
 global-id side-car and an `ume_mpi` reference-compare option. The guard it needs
-is now in `test/CMakeLists.txt` with an empty body; commit 13 fills it in.
+now holds `partition_mpi_run`; commit 13 adds the comparison beside it. The
+shape that survived design review, since a rank cannot pick the spike zone
+locally and still agree with the serial run:
+
+1. `ume_partition --global-ids` writes `<base>.%05d.gid`, the serial global
+   index of every local entity of every kind.
+2. `mpiexec -n 1 ume_mpi --dump-grad ref` on a `--ranks 1` partition — which is
+   bit-identical to the input, so it *is* the serial answer — records the spike
+   zone's global id in the file header alongside `(gid, zgrad)` per real zone.
+3. `mpiexec -n N ume_mpi --compare ref` reads the spike gid back, so both runs
+   perturb the same zone, and compares its real zones' `zgrad` against the
+   reference. Tolerance relative to the largest reference magnitude; **not**
+   `test_brick.cc`'s `GRAD_TOL == 0.0`, because partitioned accumulation order
+   genuinely differs.
+
+That needs no `ume_serial` change and no second reference path.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

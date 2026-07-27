@@ -154,13 +154,13 @@ int main(int argc, char *argv[]) {
    *
    * Take the middle of the interior zones rather than scanning upward from
    * the middle of the whole zone range: where the interior zones sit is a
-   * property of the mesh generator, not something a driver can assume.  A
-   * generator that appends every boundary zone after every real one, on a
-   * rank where boundary zones are at least half of the local zones, leaves the
-   * upper half of the rank's range entirely mask == -1, and the scan runs off
-   * the end -- leaving czi == local_size(), which asserts in a Debug build and
-   * in a Release build spikes a ghost zone, or writes past `zfield` entirely on
-   * a rank that has no ghosts. */
+   * property of the mesh generator, not something a driver can assume.
+   * `gen_brick` appends every boundary zone after every real one, so on a
+   * rank where boundary zones are at least half of the local zones the upper
+   * half of the range is entirely mask == -1 and the scan runs off the end --
+   * leaving czi == local_size(), which asserts in a Debug build and in a
+   * Release build spikes a ghost zone, or writes past `zfield` entirely on a
+   * rank that has no ghosts. */
   auto const &kztyp = mesh.zones.mask;
   int const zl = mesh.zones.local_size();
   auto const is_interior = [](short const mask) { return mask >= 1; };
