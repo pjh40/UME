@@ -29,6 +29,13 @@ struct Mesh_Base {
   Ume::Comm::Transport *comm = nullptr;
 };
 
+//! Attach a process-local (no-op) Transport to `mesh`
+/*! Derived variables call `scatter()`, which dereferences `Mesh_Base::comm`,
+    so a mesh must have a Transport attached before its Datastore is used.
+    Every mesh attached this way shares one `Comm::Dummy_Transport`, which is
+    stateless. */
+void attach_serial_transport(Mesh_Base &mesh);
+
 } // namespace Ume
 
 #endif

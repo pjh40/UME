@@ -147,7 +147,7 @@ int main(int argc, char *argv[]) {
   int status = 0;
   {
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::Stats const stats = Brick::build(spec, mesh);
 
     std::cout << "Brick " << spec.nx << 'x' << spec.ny << 'x' << spec.nz

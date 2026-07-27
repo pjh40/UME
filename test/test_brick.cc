@@ -116,7 +116,7 @@ std::string describe(Brick::Spec const &s) {
 //! Face-connected components of the tetrahedral cells
 int clusters(Brick::Spec const &spec, std::vector<Brick::Cell_Type> const &c) {
   Mesh mesh;
-  Brick::attach_serial_transport(mesh);
+  Ume::attach_serial_transport(mesh);
   return Brick::build(spec, c, mesh).tet_clusters;
 }
 
@@ -173,7 +173,7 @@ TEST_CASE("brick: generated meshes satisfy the mesh invariants", "[brick]") {
   for (auto const &spec : sweep()) {
     INFO(describe(spec));
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::Stats const stats = Brick::build(spec, mesh);
     CHECK(stats.hex_zones + stats.tet_zones ==
         stats.cells - stats.tet_cells + 6 * stats.tet_cells);
@@ -192,7 +192,7 @@ TEST_CASE("brick: the phantom-side boundary style also validates", "[brick]") {
   spec.tet_fraction = 0.5;
   spec.boundary = Brick::Boundary_Style::PHANTOM_SIDES_ONLY;
   Mesh mesh;
-  Brick::attach_serial_transport(mesh);
+  Ume::attach_serial_transport(mesh);
   Brick::Stats const stats = Brick::build(spec, mesh);
   CHECK(stats.boundary_zones == 0);
   std::ostringstream report;
@@ -210,7 +210,7 @@ TEST_CASE("brick: survives a write/read round trip", "[brick]") {
   spec.clustering = 0.5;
 
   Mesh mesh;
-  Brick::attach_serial_transport(mesh);
+  Ume::attach_serial_transport(mesh);
   Brick::build(spec, mesh);
 
   std::stringstream buf;
@@ -224,7 +224,7 @@ TEST_CASE("brick: gradient of a constant field vanishes", "[brick][gradient]") {
   for (auto const &spec : sweep()) {
     INFO(describe(spec));
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::build(spec, mesh);
 
     DS_Types::DBLV_T zone_field(static_cast<size_t>(mesh.zones.size()), 3.25);
@@ -254,7 +254,7 @@ TEST_CASE("brick: gradient of a linear field is exact on a uniform stencil",
     INFO(describe(spec));
     auto const cells = Brick::select_cells(spec);
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::build(spec, cells, mesh);
 
     auto const &zcoord = mesh.ds->caccess_vec3v("zcoord");
@@ -326,7 +326,7 @@ TEST_CASE("brick: gradzatz and gradzatz_invert agree", "[brick][gradient]") {
   for (auto const &spec : sweep()) {
     INFO(describe(spec));
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::build(spec, mesh);
 
     /* Put a delta on a zone that touches the physical boundary, so that the
@@ -369,7 +369,7 @@ TEST_CASE("audit: a generated brick is clean", "[brick][audit]") {
   for (auto const &spec : sweep()) {
     INFO(describe(spec));
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::build(spec, mesh);
 
     std::ostringstream report;
@@ -391,7 +391,7 @@ TEST_CASE("audit: a facet whose second side is a ghost still has two sides",
      has to see both, or every cut face in a decomposed mesh reports a
      spurious "has 1 sides". */
   Mesh mesh;
-  Brick::attach_serial_transport(mesh);
+  Ume::attach_serial_transport(mesh);
   Brick::build(audit_spec(), mesh);
 
   /* Ghost a whole zone, the way a decomposition does: the zone, every side
@@ -430,7 +430,7 @@ TEST_CASE("audit: a facet whose second side is a ghost still has two sides",
 TEST_CASE("audit: the iota maps are checked", "[brick][audit]") {
   SECTION("a consistent set of iotas passes") {
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::build(audit_spec(), mesh);
     add_iotas(mesh);
 
@@ -445,7 +445,7 @@ TEST_CASE("audit: the iota maps are checked", "[brick][audit]") {
 
   SECTION("an iota at a point its side does not touch") {
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::build(audit_spec(), mesh);
     add_iotas(mesh);
     auto &a2p = mesh.ds->access_intv("m:a>p");
@@ -462,7 +462,7 @@ TEST_CASE("audit: the iota maps are checked", "[brick][audit]") {
 
   SECTION("an iota that disagrees with its side") {
     Mesh mesh;
-    Brick::attach_serial_transport(mesh);
+    Ume::attach_serial_transport(mesh);
     Brick::build(audit_spec(), mesh);
     add_iotas(mesh);
     auto &a2f = mesh.ds->access_intv("m:a>f");
@@ -481,7 +481,7 @@ TEST_CASE("audit: corruption is detected", "[brick][audit]") {
   Brick::Spec const spec = audit_spec();
 
   Mesh mesh;
-  Brick::attach_serial_transport(mesh);
+  Ume::attach_serial_transport(mesh);
   Brick::build(spec, mesh);
 
   //! Topology only: most of the corruptions below are in the stored maps

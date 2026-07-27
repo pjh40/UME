@@ -18,6 +18,8 @@ set(UME_INCLUDE_FILES
   Datastore.hh
   Entity_Field.hh
   Mesh_Base.hh
+  Partition.hh
+  Partition_Graph.hh
   RaggedRight.hh
   SOA_Entity.hh
   SOA_Idx_Corners.hh
@@ -51,6 +53,8 @@ add_library(Ume
   Comm_Neighbors.cc
   Comm_Transport.cc
   Datastore.cc
+  Partition.cc
+  Partition_Graph.cc
   SOA_Entity.cc
   SOA_Idx_Corners.cc
   SOA_Idx_Edges.cc

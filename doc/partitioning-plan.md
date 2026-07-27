@@ -23,9 +23,27 @@ Two notes for whoever picks this up:
   whole zone together with its sides and corners leaves `(face, edge) side
   counts` as the only firing check, as claimed below.
 
-**Next: Phase 1, commit 5** — `Partition.hh/.cc` (interface, registry,
-`linear`, `slab-x/y/z`), `Partition_Graph.hh/.cc` centroids only, and
-`Ume::attach_serial_transport` promoted out of `Brick`.
+**Phase 1, commit 5 complete.** `Partition.hh/.cc` (interface, method table,
+`linear`, `slab`, `slab-x/y/z`, `real_zones`, `zone_weights`, `split_sorted`),
+`Partition_Graph.hh/.cc` (centroids only), `Ume::attach_serial_transport`
+promoted out of `Brick` into `Mesh_Base.hh`/`Comm_Transport.cc`, and
+`test/test_partition.cc`. All three trees green at 68/68.
+
+Three notes for whoever picks this up:
+
+- `Partitioner::assign` takes `Mesh const &` and the centroid path still works,
+  because `Datastore::caccess_*` is const but calls `init_()` — the lazy
+  derivation runs through the `mutable` state. So no partitioning code needs a
+  mutable mesh.
+- `split_sorted`'s `key`/`wgt` spans are indexed by *zone index*, not by
+  position in `v`, so `rcb`/`rib` can split a subset without recompacting.
+- Several zones of one Kuhn-subdivided cell share a centroid coordinate
+  exactly, so a tie group straddles a slab cut. Contiguity is an invariant of
+  the `(key, zone index)` sort order, not of the bare coordinate — the interval
+  test that looked obvious is wrong, and `test_partition.cc` says why.
+
+**Next: Phase 1, commit 6** — `Decompose.hh/.cc`: `Entity_Layout` and
+`build_decomposition`, no `extract` yet, tested directly on the layouts.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

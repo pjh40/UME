@@ -136,14 +136,9 @@ inline Stats build(Spec const &spec, SOA_Idx::Mesh &mesh) {
   return build(spec, select_cells(spec), mesh);
 }
 
-//! Attach a process-local (no-op) Transport to `mesh`
-/*! Derived variables call `scatter()`, which dereferences `Mesh::comm`, so a
-    mesh must have a Transport attached before its Datastore is used. */
-void attach_serial_transport(SOA_Idx::Mesh &mesh);
-
 //! Check the topological and geometric invariants of a generated brick
 /*! Writes a line per failed check to `os`.  Requires a Transport (see
-    `attach_serial_transport`). */
+    `Ume::attach_serial_transport`). */
 bool validate(SOA_Idx::Mesh &mesh, Spec const &spec, std::ostream &os);
 
 } // namespace Brick

@@ -700,11 +700,6 @@ Stats build(Spec const &spec, std::vector<Cell_Type> const &cells, Mesh &mesh) {
   return stats;
 }
 
-void attach_serial_transport(Mesh &mesh) {
-  static Ume::Comm::Dummy_Transport transport;
-  mesh.comm = &transport;
-}
-
 bool validate(Mesh &mesh, Spec const &spec, std::ostream &os) {
   /* Everything that is true of any mesh lives in the shared audit; what is
      left here needs to know that this mesh is a brick of known cell size. */

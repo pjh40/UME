@@ -14,6 +14,7 @@
 */
 
 #include "Ume/Comm_Transport.hh"
+#include "Ume/Mesh_Base.hh"
 #include <cstdlib>
 #include <iostream>
 
@@ -36,4 +37,10 @@ Dummy_Transport::Dummy_Transport() {
 }
 
 } // namespace Comm
+
+void attach_serial_transport(Mesh_Base &mesh) {
+  static Ume::Comm::Dummy_Transport transport;
+  mesh.comm = &transport;
+}
+
 } // namespace Ume
