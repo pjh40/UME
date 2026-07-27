@@ -96,21 +96,26 @@ void split_sorted(std::span<int const> v, std::span<double const> key,
   for (int i = 0; i < n; ++i) {
     int const z = order[static_cast<std::size_t>(i)];
     std::int64_t const w = weight(z);
-    /* Charge the zone to the part its weight *midpoint* falls in, which
-       splits a heavy zone to whichever side it mostly belongs on rather than
-       always to the left. */
-    int p = (total > 0)
-        ? static_cast<int>(((2 * acc + w) * k) / (2 * total))
-        : (i * k) / n;
-    p = std::clamp(p, 0, k - 1);
-    /* Nothing above stops a run of heavy zones from stepping over a part
-       entirely.  In sorted order part `p` can only be reached once `p` zones
-       have been placed, and must be reached with `k - p` zones left, so those
-       two bounds make the assignment onto `[0, k)` when there are enough
-       zones to go round.  Both bounds are non-decreasing in `i`, so clamping
-       to them keeps each part contiguous. */
-    if (n >= k)
-      p = std::clamp(p, k - (n - i), i);
+    int p;
+    if (n < k) {
+      /* Not enough zones to go round.  Fill from the first part and leave the
+         tail empty, rather than letting the weight rule scatter a handful of
+         zones across the middle of the range and strand part 0. */
+      p = i;
+    } else {
+      /* Charge the zone to the part its weight *midpoint* falls in, which
+         splits a heavy zone to whichever side it mostly belongs on rather
+         than always to the left. */
+      p = (total > 0) ? static_cast<int>(((2 * acc + w) * k) / (2 * total))
+                      : (i * k) / n;
+      /* Nothing in that stops a run of heavy zones from stepping over a part
+         entirely.  In sorted order part `p` can only be reached once `p`
+         zones have been placed, and must be reached with `k - p` zones left,
+         so those two bounds make the assignment onto `[0, k)`.  Both are
+         non-decreasing in `i`, so clamping to them keeps each part
+         contiguous. */
+      p = std::clamp(std::clamp(p, 0, k - 1), k - (n - i), i);
+    }
     z2r[static_cast<std::size_t>(z)] = first_part + p;
     acc += w;
   }

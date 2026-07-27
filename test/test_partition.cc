@@ -603,3 +603,29 @@ TEST_CASE("decompose: rejects a zone map it cannot use", "[partition]") {
   CHECK_THROWS_AS(
       Part::build_decomposition(mesh, bad, 2), std::invalid_argument);
 }
+
+TEST_CASE("partition: scarce zones fill the low parts", "[partition]") {
+  /* Asking for more parts than there are zones is a legitimate thing to do by
+     accident, and the answer has to be "the first n parts get one zone each".
+     The weight rule alone would put a lone zone at its weight midpoint --
+     part k/2 -- leaving part 0 empty, and an empty part 0 is the one that
+     tends to be looked at first. */
+  Brick::Spec spec;
+  spec.nx = spec.ny = spec.nz = 1;
+  Mesh mesh;
+  brick(spec, mesh);
+  int const zones = static_cast<int>(Part::real_zones(mesh).size());
+  REQUIRE(zones == 1);
+
+  Part::Options opt;
+  Part::Zone_Map z2r;
+  for (std::string const &name : Part::methods())
+    for (int nparts : {1, 2, 3, 8}) {
+      INFO(name << " nparts=" << nparts);
+      opt.nparts = nparts;
+      Part::make(name)->assign(mesh, opt, z2r);
+      for (int z = 0; z < mesh.zones.size(); ++z)
+        if (mesh.zones.mask[z] >= 1)
+          CHECK(z2r[static_cast<std::size_t>(z)] == 0);
+    }
+}
