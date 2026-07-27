@@ -682,6 +682,90 @@ private:
   char const *describe_;
 };
 
+//! Deal the real zones out to the parts one at a time
+class Round_Robin : public Partitioner {
+public:
+  char const *name() const override { return "roundrobin"; }
+  char const *describe() const override {
+    return "the i'th real zone to part i % nparts";
+  }
+
+  void assign(SOA_Idx::Mesh const &mesh, Options const &opt,
+      Zone_Map &z2r) const override {
+    /* Dealt over the *real* zones rather than over the raw zone index, so that
+       a mesh whose boundary zones are interleaved with its real ones -- or, as
+       `gen_brick` does it, appended after them -- deals the same way.  A raw
+       `z % nparts` would leave the residue classes of the skipped zones short.
+
+       There is no weighting here and there is deliberately none: this method
+       exists to be the worst case, and dealing by count is the thing that
+       makes almost every face a cut face and the communication graph
+       complete.  It is the method the layout machinery is hardest on. */
+    std::vector<int> const v = begin_assign(mesh, opt, z2r);
+    int p = 0;
+    for (int const z : v) {
+      z2r[static_cast<std::size_t>(z)] = p;
+      if (++p == opt.nparts)
+        p = 0;
+    }
+  }
+};
+
+//! One step of SplitMix64, advancing `state`
+/*! The built-in methods may not reach for `std::shuffle` or
+    `std::uniform_int_distribution`: neither has a specified algorithm, so the
+    same seed gives different partitions under libstdc++ and libc++, and
+    `--seed` would only reproduce a run on the machine that made it. */
+std::uint64_t next_random(std::uint64_t &state) {
+  std::uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+//! A uniform draw from `[0, n)`, with `n > 0`
+std::uint64_t bounded_random(std::uint64_t &state, std::uint64_t n) {
+  /* 2^64 % n draws have to be thrown away for the rest to be uniform: taking
+     the modulus of every draw would favour the first 2^64 % n values. */
+  std::uint64_t const reject = (~n + 1u) % n;
+  std::uint64_t x;
+  do {
+    x = next_random(state);
+  } while (x < reject);
+  return x % n;
+}
+
+//! Scatter the zones at random, then cut the shuffle into equal-weight runs
+class Random : public Partitioner {
+public:
+  char const *name() const override { return "random"; }
+  char const *describe() const override {
+    return "a shuffle of the zones determined by the seed";
+  }
+
+  void assign(SOA_Idx::Mesh const &mesh, Options const &opt,
+      Zone_Map &z2r) const override {
+    std::vector<int> v = begin_assign(mesh, opt, z2r);
+    std::vector<int> const wgt = zone_weights(mesh, opt);
+
+    /* Fisher-Yates, which is a bijection onto the permutations however the
+       draws come out, so no zone can be dropped or placed twice. */
+    std::uint64_t state = opt.seed;
+    for (std::size_t i = v.size(); i > 1; --i)
+      std::swap(v[i - 1], v[bounded_random(state, i)]);
+
+    /* The shuffle only fixes the *order*; the weight balance still comes from
+       `split_sorted`, so `random` is a partition that is as badly shaped as
+       round-robin and as well balanced as the geometric methods.  Keeping the
+       two effects apart is what makes it a useful control. */
+    std::vector<double> key(static_cast<std::size_t>(mesh.zones.size()), 0.0);
+    for (std::size_t i = 0; i < v.size(); ++i)
+      key[static_cast<std::size_t>(v[i])] = static_cast<double>(i);
+
+    split_sorted(v, key, wgt, 0, opt.nparts, z2r);
+  }
+};
+
 //! Cut the mesh into contiguous runs of the original zone numbering
 class Linear : public Partitioner {
 public:
@@ -715,10 +799,12 @@ constexpr Method TABLE[] = {
         nullptr, true},
     {"pencil", "columns spanning the shortest extent of the mesh", nullptr,
         true},
+    {"random", "a shuffle of the zones determined by the seed", nullptr, true},
     {"rcb", "recursive bisection normal to each piece's longest axis", nullptr,
         true},
     {"rib", "recursive bisection normal to each piece's principal axis",
         nullptr, true},
+    {"roundrobin", "the i'th real zone to part i % nparts", nullptr, true},
     {"slab", "slabs normal to the longest extent of the mesh", nullptr, true},
     {"slab-x", "slabs normal to x", nullptr, true},
     {"slab-y", "slabs normal to y", nullptr, true},
@@ -758,10 +844,14 @@ std::unique_ptr<Partitioner> make(std::string_view name) {
     return std::make_unique<Curve>(false, m->name, m->describe);
   if (name == "pencil")
     return std::make_unique<Block>(2, m->name, m->describe);
+  if (name == "random")
+    return std::make_unique<Random>();
   if (name == "rcb")
     return std::make_unique<Recursive>(false, m->name, m->describe);
   if (name == "rib")
     return std::make_unique<Recursive>(true, m->name, m->describe);
+  if (name == "roundrobin")
+    return std::make_unique<Round_Robin>();
   if (name == "slab")
     return std::make_unique<Slab>(-1, m->name, m->describe);
   if (name == "slab-x")

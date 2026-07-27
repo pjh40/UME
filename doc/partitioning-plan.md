@@ -333,7 +333,46 @@ At a part count that divides the curve into whole blocks the two curves agree
 `block` does, which is the sharpest available check that the quantization,
 ordering and run-splitting line up.
 
-Next: `roundrobin`/`random`, and `bfs` — one commit per group.
+**Phase 3, commit 17 complete.** The `roundrobin` and `random` methods in
+`Partition.cc`, plus four Catch2 tests. All three trees green at 125/125, and
+129/129 with MPI.
+
+Four notes:
+
+- **"Round-robin makes the communication graph complete" is false, and the
+  exception is structural rather than lucky.** The deal has period `nparts`;
+  two zones of a brick share a face only if their positions differ by 1, `nx`
+  or `nx*ny`; so whenever `nparts` divides one of those strides the deal
+  *aliases* with the mesh. On a 4-wide brick at four parts `roundrobin`
+  produces `slab-x`'s zone map exactly — not approximately, the identical map —
+  and beats `block` on neighbor count (2 against 3). Both the aliased and the
+  unaliased case are in the tests, with the arithmetic. A worst case that is
+  only a worst case on average has to be swept, not sampled.
+- `random` has no period to alias with, and it is the one that reliably reaches
+  the complete graph: `mean_neighbors == nparts - 1` at every count measured.
+  `roundrobin` is the worse of the two on *volume* when it does not alias — on
+  5×4×4 at eight parts it cuts 184 of 184 interior faces, against `random`'s
+  158 and `block`'s 72. The two are worst cases of different halves of the cost
+  model, which is why both are worth having.
+- **The shuffle is hand-rolled — SplitMix64 and Fisher–Yates — on purpose.**
+  Neither `std::shuffle` nor `std::uniform_int_distribution` has a specified
+  algorithm, so the same seed gives different partitions under libstdc++ and
+  libc++, and `--seed` would only reproduce a run on the machine that made it.
+  No test here can check that, which is exactly why it is written down.
+- `roundrobin` is the first method that does not go through `split_sorted`: it
+  balances the *count* exactly and the weight only incidentally. It still meets
+  the existing `the split balances the weight it was given` bound on the mixed
+  brick, so nothing needed relaxing — but that is a measurement, not a
+  guarantee, and a mesh with a strong periodic weight pattern could break it.
+
+One pre-existing defect found and left alone, for its own commit: the doc
+comment on `Metrics::interior_faces` says "whose two zones are on one rank",
+but `face_cuts` sets `interior` on every face with a real zone on each side and
+`cut` on the subset of those that are cut. The number and `report()` are right;
+only the comment is wrong, and it is the kind of wrong that costs whoever reads
+it next an hour.
+
+Next: `bfs`.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

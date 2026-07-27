@@ -586,6 +586,180 @@ TEST_CASE("partition: the Hilbert curve's runs beat the Z-order curve's",
   CHECK(hilbert < morton);
 }
 
+TEST_CASE("partition: round robin deals one zone at a time", "[partition]") {
+  /* The deal runs over the *real* zones, not over the raw zone index.  On a
+     `gen_brick` mesh every boundary zone is appended after every real one, so
+     a raw `z % nparts` would agree with this here and disagree on a mesh whose
+     boundary zones are interleaved; the mixed brick's Kuhn subdivision is
+     enough to make the two orders different arithmetic. */
+  Mesh mesh;
+  brick(mixed_spec(), mesh);
+  std::vector<int> const v = Part::real_zones(mesh);
+
+  Part::Options opt;
+  Part::Zone_Map z2r;
+  for (int nparts : {1, 2, 3, 4, 7, 8}) {
+    INFO("nparts=" << nparts);
+    opt.nparts = nparts;
+    Part::make("roundrobin")->assign(mesh, opt, z2r);
+
+    for (std::size_t i = 0; i < v.size(); ++i)
+      REQUIRE(z2r[static_cast<std::size_t>(v[i])] ==
+          static_cast<int>(i % static_cast<std::size_t>(nparts)));
+
+    /* Dealing balances the *count* exactly, which is not the same thing as
+       balancing the weight -- the reason every other built-in method goes
+       through `split_sorted` instead. */
+    std::vector<long> n(static_cast<std::size_t>(nparts), 0);
+    for (int const z : v)
+      n[static_cast<std::size_t>(z2r[static_cast<std::size_t>(z)])] += 1;
+    CHECK(*std::ranges::max_element(n) - *std::ranges::min_element(n) <= 1);
+  }
+}
+
+TEST_CASE("partition: a scattered partition pays for its scattering",
+    "[partition]") {
+  /* Why these two methods are worth having: they are the control the good
+     methods are measured against, and the decomposition machinery's hardest
+     case.  Almost every face is a cut face, so every layout rule that a
+     compact method exercises once gets exercised everywhere.
+
+     The brick is 5 wide against 8 parts so that neither method's period can
+     line up with the mesh's rows -- see the aliasing test below, which is what
+     happens when it does. */
+  constexpr int NPARTS = 8;
+  Brick::Spec spec;
+  spec.nx = 5;
+  spec.ny = 4;
+  spec.nz = 4;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  auto measure = [&](char const *method) {
+    Part::Zone_Map z2r;
+    Part::make(method)->assign(mesh, opt, z2r);
+    return Part::measure(
+        mesh, Part::build_decomposition(mesh, std::move(z2r), NPARTS));
+  };
+  Part::Metrics const box = measure("block");
+  Part::Metrics const rr = measure("roundrobin");
+  Part::Metrics const rnd = measure("random");
+
+  /* How many faces have a real zone on each side is a property of the mesh,
+     so the three methods are competing over the same denominator. */
+  long const interior = box.interior_faces;
+  for (Part::Metrics const *m : {&rr, &rnd}) {
+    REQUIRE(m->interior_faces == interior);
+    CHECK(m->kinds[Part::POINT].duplicated >
+        2 * box.kinds[Part::POINT].duplicated);
+    /* Every point a rank holds is on a cut, which is the limit a
+       decomposition degrades to and the thing surface-to-volume measures. */
+    CHECK(m->max_surface_to_volume == 1.0);
+  }
+  CHECK(box.cut_faces * 2 < interior);
+
+  /* `roundrobin` cuts every interior face there is, and does so structurally
+     rather than by luck: two zones share a face only if their positions in the
+     deal differ by 1, by `nx`, or by `nx * ny`, and none of 1, 5 or 20 is a
+     multiple of 8.  `random` gets most of the way there without the
+     arithmetic. */
+  CHECK(rr.cut_faces == interior);
+  CHECK(rnd.cut_faces * 4 > interior * 3);
+
+  /* `random` reaches the other half of the worst case as well: every rank
+     talks to every other, so the latency cost is the complete graph and no
+     rank ordering can help it.  `roundrobin` gets close but is not guaranteed
+     to -- its deal is periodic, and a period is something a mesh can be
+     commensurate with. */
+  CHECK(rnd.mean_neighbors == static_cast<double>(NPARTS - 1));
+  CHECK(rr.mean_neighbors > box.mean_neighbors);
+}
+
+TEST_CASE("partition: round robin aliases against the mesh it deals over",
+    "[partition]") {
+  /* `roundrobin` is described as the deliberate worst case, and over a sweep
+     of part counts it is.  It is not one pointwise, and the exception is
+     structural rather than lucky: the deal has period `nparts`, a brick's
+     zones come out in rows of `nx`, and when `nparts` divides that row every
+     zone of a given part lands at the same x.  The deal is then a slab stack
+     -- not approximately, but the identical zone map -- and it beats `block`
+     on neighbor count.
+
+     Worth pinning because it is the shape of every result this method is used
+     to produce: a worst case that is only a worst case on average is one that
+     has to be swept, not sampled. */
+  constexpr int NPARTS = 4;
+  Brick::Spec spec;
+  spec.nx = NPARTS;
+  spec.ny = 4;
+  spec.nz = 4;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  Part::Zone_Map rr, slab;
+  Part::make("roundrobin")->assign(mesh, opt, rr);
+  Part::make("slab-x")->assign(mesh, opt, slab);
+  CHECK(rr == slab);
+
+  auto measure = [&](Part::Zone_Map z2r) {
+    return Part::measure(
+        mesh, Part::build_decomposition(mesh, std::move(z2r), NPARTS));
+  };
+  Part::Zone_Map box;
+  Part::make("block")->assign(mesh, opt, box);
+  Part::Metrics const m_rr = measure(std::move(rr));
+  Part::Metrics const m_box = measure(std::move(box));
+
+  /* A stack of slabs still moves more points than a grid of boxes; what it
+     wins is that each slab has only two neighbors. */
+  CHECK(m_rr.kinds[Part::POINT].duplicated >
+      m_box.kinds[Part::POINT].duplicated);
+  CHECK(m_rr.max_neighbors < m_box.max_neighbors);
+}
+
+TEST_CASE("partition: the seed alone decides the shuffle", "[partition]") {
+  /* What `--seed` is worth depends entirely on this.  The shuffle is
+     hand-rolled rather than `std::shuffle` precisely so that it holds across
+     standard libraries too, which no test here can check -- but a seed that
+     did not even reproduce within one build would not be worth the option. */
+  Mesh mesh;
+  brick(mixed_spec(), mesh);
+
+  Part::Options opt;
+  opt.nparts = 4;
+  Part::Zone_Map a, b, c;
+  Part::make("random")->assign(mesh, opt, a);
+  Part::make("random")->assign(mesh, opt, b);
+  CHECK(a == b);
+
+  opt.seed += 1;
+  Part::make("random")->assign(mesh, opt, c);
+  CHECK(a != c);
+
+  /* A different seed has to give a different *shuffle*, not merely a
+     relabelling of the same parts: the point of the option is to sample the
+     method, so the zones that share a part must change too. */
+  std::vector<int> const v = Part::real_zones(mesh);
+  bool split_differently = false;
+  for (std::size_t i = 0; i < v.size() && !split_differently; ++i)
+    for (std::size_t j = i + 1; j < v.size(); ++j) {
+      auto const [x, y] = std::pair{v[i], v[j]};
+      bool const together_a = a[static_cast<std::size_t>(x)] ==
+          a[static_cast<std::size_t>(y)];
+      bool const together_c = c[static_cast<std::size_t>(x)] ==
+          c[static_cast<std::size_t>(y)];
+      if (together_a != together_c) {
+        split_differently = true;
+        break;
+      }
+    }
+  CHECK(split_differently);
+}
+
 TEST_CASE("partition: nparts must be positive", "[partition]") {
   Mesh mesh;
   brick(mixed_spec(), mesh);
