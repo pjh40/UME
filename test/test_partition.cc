@@ -28,8 +28,10 @@
 #include "Ume/mesh_audit.hh"
 #include "Ume/partition_check.hh"
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <set>
@@ -37,6 +39,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 using namespace Ume;
 using Ume::SOA_Idx::Mesh;
@@ -203,6 +206,104 @@ TEST_CASE("partition: a slab is contiguous along its axis", "[partition]") {
   }
 }
 
+TEST_CASE("partition: the grid shape follows the mesh extents", "[partition]") {
+  using Dims = std::array<int, 3>;
+  using Extent = std::array<double, 3>;
+
+  /* Whatever the shape and however many axes may be cut, the grid has to
+     account for every part: a `dims` whose product is less than `nparts`
+     silently produces empty ranks. */
+  for (int n : {1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 16, 17, 24, 36, 64, 1000})
+    for (Extent const &ext : {Extent{1.0, 1.0, 1.0}, Extent{4.0, 2.0, 1.0},
+             Extent{0.0, 3.0, 0.0}, Extent{0.0, 0.0, 0.0}})
+      for (int naxes : {1, 2, 3}) {
+        INFO("nparts=" << n << " naxes=" << naxes);
+        Dims const d = Part::dims_create(n, ext, naxes);
+        CHECK(d[0] * d[1] * d[2] == n);
+        CHECK(std::ranges::all_of(d, [](int k) { return k >= 1; }));
+      }
+
+  /* A cube divides evenly; a long mesh divides along its length; a prime
+     count has nowhere to go but one axis. */
+  CHECK(Part::dims_create(8, Extent{1.0, 1.0, 1.0}) == Dims{2, 2, 2});
+  CHECK(Part::dims_create(4, Extent{4.0, 1.0, 1.0}) == Dims{4, 1, 1});
+  CHECK(Part::dims_create(7, Extent{1.0, 1.0, 1.0}) == Dims{7, 1, 1});
+  CHECK(Part::dims_create(12, Extent{4.0, 2.0, 1.0}) == Dims{6, 2, 1});
+
+  /* A single-cell-thick mesh has no extent to cut along its third axis, and
+     cutting it there would buy communication for nothing. */
+  CHECK(Part::dims_create(8, Extent{3.0, 3.0, 0.0}) == Dims{4, 2, 1});
+
+  /* `pencil` is `block` less its shortest axis, and the shortest axis is the
+     one with the least extent rather than the last one. */
+  CHECK(Part::dims_create(4, Extent{1.0, 2.0, 3.0}, 2) == Dims{1, 2, 2});
+  CHECK(Part::dims_create(4, Extent{1.0, 2.0, 3.0}, 1) == Dims{1, 1, 4});
+}
+
+TEST_CASE("partition: a pencil spans the shortest axis", "[partition]") {
+  /* 4x4x2 divided four ways puts both cuts on the long axes, and both of them
+     fall between coordinate planes rather than inside one, so the columns are
+     exact: every zone of a column belongs to one part. */
+  Brick::Spec spec;
+  spec.nx = 4;
+  spec.ny = 4;
+  spec.nz = 2;
+  Mesh mesh;
+  brick(spec, mesh);
+  auto const &zcoord = Part::zone_centroids(mesh);
+
+  Part::Options opt;
+  opt.nparts = 4;
+  Part::Zone_Map z2r;
+  Part::make("pencil")->assign(mesh, opt, z2r);
+
+  std::map<std::pair<double, double>, int> column;
+  for (int const z : Part::real_zones(mesh)) {
+    auto const u = static_cast<std::size_t>(z);
+    std::pair<double, double> const xy{zcoord[u][0], zcoord[u][1]};
+    auto const it = column.emplace(xy, z2r[u]).first;
+    INFO("zone " << z << " at (" << xy.first << ", " << xy.second << ')');
+    CHECK(it->second == z2r[u]);
+  }
+  CHECK(column.size() == 16);
+}
+
+TEST_CASE("partition: boxes cost less to communicate than slabs",
+    "[partition]") {
+  /* This is the reason `block` exists.  Four slabs of a 4x4x4 brick cut three
+     whole 4x4 planes; four boxes cut one plane and then half of another, so
+     the surface they share is smaller -- and it is the surface, not the
+     method, that ends up on the wire. */
+  constexpr int NPARTS = 4;
+  Brick::Spec spec;
+  spec.nx = 4;
+  spec.ny = 4;
+  spec.nz = 4;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  auto measure = [&](char const *method) {
+    Part::Zone_Map z2r;
+    Part::make(method)->assign(mesh, opt, z2r);
+    return Part::measure(
+        mesh, Part::build_decomposition(mesh, std::move(z2r), NPARTS));
+  };
+  Part::Metrics const box = measure("block");
+  Part::Metrics const slab = measure("slab-x");
+
+  CHECK(box.cut_faces < slab.cut_faces);
+  CHECK(box.kinds[Part::POINT].duplicated < slab.kinds[Part::POINT].duplicated);
+  CHECK(box.total_comm_elems() < slab.total_comm_elems());
+  CHECK(box.max_surface_to_volume < slab.max_surface_to_volume);
+
+  /* Cheaper communication is only worth having if the parts are still even:
+     both methods cut at weight boundaries, so a brick of identical hexes
+     divides exactly. */
+  CHECK(box.kinds[Part::ZONE].imbalance == 1.0);
+}
+
 TEST_CASE("partition: nparts must be positive", "[partition]") {
   Mesh mesh;
   brick(mixed_spec(), mesh);
@@ -222,7 +323,7 @@ namespace {
 //! The decompositions the layout sweep runs over
 struct Case {
   Brick::Spec spec;
-  char const *method;
+  std::string method;
   int nparts;
   std::string describe() const {
     std::ostringstream os;
@@ -260,7 +361,10 @@ std::vector<Case> const &cases() {
                s.boundary = Brick::Boundary_Style::PHANTOM_SIDES_ONLY;
                return s;
              }()})
-      for (char const *method : {"linear", "slab-x", "slab-y", "slab-z"})
+      /* Every method this build can run goes through the audit, the cross-rank
+         check and the metrics, so a method joins the sweep by being registered
+         rather than by being remembered. */
+      for (std::string const &method : Part::methods())
         for (int n : {1, 2, 3, 4, 7, 8})
           c.push_back({spec, method, n});
     return c;

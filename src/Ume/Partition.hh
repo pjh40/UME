@@ -32,7 +32,9 @@
 #ifndef UME_PARTITION_HH
 #define UME_PARTITION_HH 1
 
+#include "Ume/DS_Types.hh"
 #include "Ume/SOA_Idx_Mesh.hh"
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -131,6 +133,28 @@ std::vector<int> real_zones(SOA_Idx::Mesh const &mesh);
 //! The weight `opt.vwgt` assigns to each zone, 0 for zones that are not real
 /*! Indexed by zone index, with length `mesh.zones.size()`. */
 std::vector<int> zone_weights(SOA_Idx::Mesh const &mesh, Options const &opt);
+
+//! The extent of the centroids of the zones `v` along each axis
+/*! An axis along which every zone of `v` has the same centroid coordinate --
+    the third axis of a single-cell-thick mesh, say -- has extent 0, and an
+    empty `v` has extent 0 everywhere. */
+std::array<double, 3> centroid_extent(
+    std::span<int const> v, DS_Types::VEC3V_T const &zcoord);
+
+//! Shape `nparts` into a grid of per-axis division counts
+/*! The product of the result is exactly `nparts`.  Each prime factor of
+    `nparts`, largest first, is given to the axis that is currently the least
+    divided *relative to its extent*, so the boxes come out as cubical as the
+    factorization allows -- in physical rather than in index space, which is
+    what makes this work on a mesh with no lattice behind it and on one whose
+    cells are not cubes.
+
+    Only the `naxes` longest axes are divided; the rest keep a single
+    division, which is the whole difference between `block` (3) and `pencil`
+    (2).  An axis of zero extent is never divided unless every axis has zero
+    extent.  Throws `std::invalid_argument` if `nparts < 1`. */
+std::array<int, 3> dims_create(
+    int nparts, std::array<double, 3> const &extent, int naxes = 3);
 
 //! Split the zones `v` into `k` groups of equal weight, ordered by `key`
 /*! `key` and `wgt` are indexed by *zone index*, not by position in `v`, so a

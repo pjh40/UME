@@ -233,12 +233,42 @@ Four notes:
   Gathering would be a second, unchecked path to something one rank already
   produces exactly.
 
-**Phase 2 is complete.** Next is **Phase 3**, the zero-dependency methods:
-`block`/`pencil`/`dims_create`, then `rcb`/`rib`, `morton`/`hilbert`,
-`roundrobin`/`random`, and `bfs` — one commit per group, each dropping into the
-phase 1–2 harness unchanged. `test_partition.cc` already sweeps
-`Part::methods()` rather than a hardcoded list, so a new method joins the audit
-sweep by being registered.
+**Phase 3, commit 14 complete.** `centroid_extent`, `dims_create`, and the
+`block`/`pencil` methods in `Partition.cc`, plus three Catch2 tests. All three
+trees green at 115/115, and 119/119 with MPI.
+
+Three notes:
+
+- The plan's claim that the sweep picks methods up from `Part::methods()` was
+  only half true: the *strategy* tests did, but `cases()` — which feeds
+  `extract`, the audit, the cross-rank check and the metrics — carried a
+  hardcoded `{"linear", "slab-x", "slab-y", "slab-z"}`. It now iterates
+  `Part::methods()`, so the rest of phase 3 gets the whole harness for free.
+  That is the change to make when adding a method, not a new test.
+- **The grid cuts do not have to line up between columns, and it matters that
+  they don't.** Each level splits its own group at a cumulative-*weight*
+  boundary, so a column of heavier zones gets shorter boxes. The parts are
+  therefore not boxes in general — which costs nothing, because nothing
+  downstream assumes they are, and it is what keeps the existing "no part is
+  more than one zone off the mean" contract test passing at three nesting
+  levels.
+- `dims_create` works off the *centroid* extent, so an axis one cell thick has
+  extent 0 and is never divided while any other axis has extent left. That is
+  the case a `dims[i]/extent[i]` rule would divide by zero on, and the reason
+  the comparison is cross-multiplied rather than divided.
+
+On an 8×6×4 brick split eight ways, `point_lambda1` is 275 for `slab-x` and 198
+for both `block` and `pencil` — the two agree here because the shape rule gives
+(4,2,1) either way, z being too thin to be worth cutting.
+
+Next: `rcb`/`rib`, then `morton`/`hilbert`, `roundrobin`/`random`, and `bfs` —
+one commit per group. `centroid_extent` is already there for `rcb`'s
+per-subset longest axis.
+
+Both new methods live in `Partition.cc` alongside `slab` and `linear` rather
+than in the `Partition_Geometric.cc` the architecture section names. Splitting
+the file needs a private header to reach the classes from `make()`; do it when
+`morton`/`hilbert` land and the file has earned it.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

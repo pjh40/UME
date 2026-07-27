@@ -16,7 +16,9 @@
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Graph.hh"
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 
@@ -67,6 +69,71 @@ std::vector<int> zone_weights(SOA_Idx::Mesh const &mesh, Options const &opt) {
   }
   }
   return w;
+}
+
+std::array<double, 3> centroid_extent(
+    std::span<int const> v, DS_Types::VEC3V_T const &zcoord) {
+  std::array<double, 3> lo, hi;
+  lo.fill(std::numeric_limits<double>::max());
+  hi.fill(std::numeric_limits<double>::lowest());
+  for (int const z : v)
+    for (std::size_t d = 0; d < 3; ++d) {
+      double const x = zcoord[static_cast<std::size_t>(z)][d];
+      lo[d] = std::min(lo[d], x);
+      hi[d] = std::max(hi[d], x);
+    }
+  std::array<double, 3> ext{0.0, 0.0, 0.0};
+  if (!v.empty())
+    for (std::size_t d = 0; d < 3; ++d)
+      ext[d] = hi[d] - lo[d];
+  return ext;
+}
+
+std::array<int, 3> dims_create(
+    int nparts, std::array<double, 3> const &extent, int naxes) {
+  if (nparts < 1)
+    throw std::invalid_argument("dims_create: nparts must be positive");
+  naxes = std::clamp(naxes, 1, 3);
+
+  /* The axes we are allowed to divide, longest extent first. */
+  std::array<int, 3> axis{0, 1, 2};
+  std::ranges::stable_sort(axis, [&extent](int a, int b) {
+    return extent[static_cast<std::size_t>(a)] >
+        extent[static_cast<std::size_t>(b)];
+  });
+
+  std::array<int, 3> dims{1, 1, 1};
+  /* Prime factors, largest first: a big factor placed early lands on the axis
+     that can best absorb it, and the small ones then even the shape out. */
+  std::vector<int> factors;
+  for (int f = 2, n = nparts; n > 1; ++f) {
+    if (f * f > n) {
+      factors.push_back(n);
+      break;
+    }
+    while (n % f == 0) {
+      factors.push_back(f);
+      n /= f;
+    }
+  }
+  std::ranges::sort(factors, std::greater<int>{});
+
+  for (int const f : factors) {
+    int best = axis[0];
+    for (int k = 1; k < naxes; ++k) {
+      int const c = axis[static_cast<std::size_t>(k)];
+      /* dims[c]/extent[c] < dims[best]/extent[best], cross-multiplied so that
+         a zero extent divides nothing rather than dividing by zero.  The
+         comparison is strict, so a tie keeps the longer axis. */
+      if (dims[static_cast<std::size_t>(c)] *
+              extent[static_cast<std::size_t>(best)] <
+          dims[static_cast<std::size_t>(best)] *
+              extent[static_cast<std::size_t>(c)])
+        best = c;
+    }
+    dims[static_cast<std::size_t>(best)] *= f;
+  }
+  return dims;
 }
 
 void split_sorted(std::span<int const> v, std::span<double const> key,
@@ -161,26 +228,114 @@ public:
 private:
   static int longest_extent(
       std::vector<int> const &v, DS_Types::VEC3V_T const &zcoord) {
-    double lo[3] = {std::numeric_limits<double>::max(),
-        std::numeric_limits<double>::max(),
-        std::numeric_limits<double>::max()};
-    double hi[3] = {std::numeric_limits<double>::lowest(),
-        std::numeric_limits<double>::lowest(),
-        std::numeric_limits<double>::lowest()};
-    for (int const z : v)
-      for (int d = 0; d < 3; ++d) {
-        double const x = zcoord[static_cast<std::size_t>(z)][static_cast<std::size_t>(d)];
-        lo[d] = std::min(lo[d], x);
-        hi[d] = std::max(hi[d], x);
-      }
-    int best = 0;
-    for (int d = 1; d < 3; ++d)
-      if (hi[d] - lo[d] > hi[best] - lo[best])
-        best = d;
-    return best;
+    std::array<double, 3> const ext = centroid_extent(v, zcoord);
+    return static_cast<int>(std::ranges::max_element(ext) - ext.begin());
   }
 
   int axis_;
+  char const *name_;
+  char const *describe_;
+};
+
+//! One axis of a grid split, and how many ways it is divided
+struct Level {
+  int axis;
+  int nparts;
+};
+
+//! Scratch shared by every node of one grid split
+struct Grid_Scratch {
+  //! The centroid coordinate of every real zone, one array per axis
+  std::array<std::vector<double>, 3> key;
+  //! Group numbers for the node being split, overwritten as the walk descends
+  Zone_Map group;
+};
+
+//! Split `v` along each level in turn, into `first_part + [0, prod(levels))`
+/*! The split at each level is by centroid *weight*, not by position, so the
+    cuts of one level need not line up between the groups of the level above:
+    a column with heavier zones in it gets shorter boxes.  That staircase is
+    the point -- it is what keeps a grid method balanced on a mesh whose zone
+    cost varies -- and it costs nothing, because the decomposition never
+    assumes a part is a box. */
+void split_grid(std::vector<int> const &v, std::span<int const> wgt,
+    std::span<Level const> levels, int first_part, Grid_Scratch &scratch,
+    Zone_Map &z2r) {
+  if (v.empty())
+    return;
+  if (levels.empty()) {
+    for (int const z : v)
+      z2r[static_cast<std::size_t>(z)] = first_part;
+    return;
+  }
+
+  Level const &level = levels.front();
+  std::span<Level const> const rest = levels.subspan(1);
+  int stride = 1;
+  for (Level const &l : rest)
+    stride *= l.nparts;
+
+  std::span<double const> const key =
+      scratch.key[static_cast<std::size_t>(level.axis)];
+  if (stride == 1) {
+    split_sorted(v, key, wgt, first_part, level.nparts, z2r);
+    return;
+  }
+
+  split_sorted(v, key, wgt, 0, level.nparts, scratch.group);
+  std::vector<std::vector<int>> bucket(static_cast<std::size_t>(level.nparts));
+  for (int const z : v)
+    bucket[static_cast<std::size_t>(scratch.group[static_cast<std::size_t>(z)])]
+        .push_back(z);
+  for (int i = 0; i < level.nparts; ++i)
+    split_grid(bucket[static_cast<std::size_t>(i)], wgt, rest,
+        first_part + i * stride, scratch, z2r);
+}
+
+//! Cut the mesh into a grid of boxes
+class Block : public Partitioner {
+public:
+  /*! `naxes` is how many of the mesh's axes may be cut: 3 for a 3-D grid of
+      boxes, 2 for columns spanning the shortest axis. */
+  Block(int naxes, char const *name, char const *describe)
+      : naxes_{naxes}, name_{name}, describe_{describe} {}
+
+  char const *name() const override { return name_; }
+  char const *describe() const override { return describe_; }
+
+  void assign(SOA_Idx::Mesh const &mesh, Options const &opt,
+      Zone_Map &z2r) const override {
+    std::vector<int> const v = begin_assign(mesh, opt, z2r);
+    auto const &zcoord = zone_centroids(mesh);
+    std::vector<int> const wgt = zone_weights(mesh, opt);
+
+    std::array<int, 3> const dims =
+        dims_create(opt.nparts, centroid_extent(v, zcoord), naxes_);
+
+    /* Undivided axes drop out, so a `pencil` of a flat mesh and a `slab` are
+       the same one-level split rather than two levels one of which is a
+       no-op. */
+    std::vector<Level> levels;
+    for (int d = 0; d < 3; ++d)
+      if (dims[static_cast<std::size_t>(d)] > 1)
+        levels.push_back(Level{d, dims[static_cast<std::size_t>(d)]});
+
+    Grid_Scratch scratch;
+    scratch.group.assign(static_cast<std::size_t>(mesh.zones.size()), -1);
+    for (Level const &l : levels) {
+      auto &key = scratch.key[static_cast<std::size_t>(l.axis)];
+      key.assign(static_cast<std::size_t>(mesh.zones.size()), 0.0);
+      for (int const z : v)
+        key[static_cast<std::size_t>(z)] = zcoord[static_cast<std::size_t>(z)]
+                                                [static_cast<std::size_t>(
+                                                    l.axis)];
+    }
+
+    split_grid(v, wgt, levels, 0, scratch, z2r);
+  }
+
+private:
+  int naxes_;
   char const *name_;
   char const *describe_;
 };
@@ -209,7 +364,11 @@ public:
     either way so that an unavailable method reads differently from a
     misspelled one. */
 constexpr Method TABLE[] = {
+    {"block", "a grid of boxes, shaped to the extents of the mesh", nullptr,
+        true},
     {"linear", "contiguous ranges of the input zone numbering", nullptr, true},
+    {"pencil", "columns spanning the shortest extent of the mesh", nullptr,
+        true},
     {"slab", "slabs normal to the longest extent of the mesh", nullptr, true},
     {"slab-x", "slabs normal to x", nullptr, true},
     {"slab-y", "slabs normal to y", nullptr, true},
@@ -239,8 +398,12 @@ std::unique_ptr<Partitioner> make(std::string_view name) {
   Method const *const m = find_method(name);
   if (!m || !m->available)
     return nullptr;
+  if (name == "block")
+    return std::make_unique<Block>(3, m->name, m->describe);
   if (name == "linear")
     return std::make_unique<Linear>();
+  if (name == "pencil")
+    return std::make_unique<Block>(2, m->name, m->describe);
   if (name == "slab")
     return std::make_unique<Slab>(-1, m->name, m->describe);
   if (name == "slab-x")
