@@ -418,13 +418,19 @@ void Auditor::connectivity() {
   }
 
   /* Every (face, edge) is shared by exactly two sides: one per zone across
-     the face, or the real side and its phantom on the mesh boundary. */
+     the face, or the real side and its phantom on the mesh boundary.
+
+     This is a statement about the facet, not about what can be followed from
+     it, so it counts ghost sides too.  On a decomposed mesh the zone across a
+     cut face is a ghost and so are its sides, and skipping them -- as
+     `usable()` does, since a ghost carries no local connectivity -- would
+     report a spurious "has 1 sides" for every cut face in the mesh. */
   start("(face, edge) side counts");
   {
     std::vector<Row<3>> fe;
     fe.reserve(static_cast<size_t>(sll_));
     for (int s = 0; s < sll_; ++s)
-      if (ok[s])
+      if ((ok[s] || smask_[s] == 0) && in(s2f_[s], fll_) && in(s2e_[s], ell_))
         fe.push_back({s2f_[s], s2e_[s], s});
     for_each_group(fe, 2, [&](std::span<Row<3> const> g) {
       if (enough())

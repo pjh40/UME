@@ -383,6 +383,50 @@ TEST_CASE("audit: a generated brick is clean", "[brick][audit]") {
   }
 }
 
+TEST_CASE("audit: a facet whose second side is a ghost still has two sides",
+    "[brick][audit]") {
+  /* A partition boundary cuts a face: the zone on the far side is imported as
+     a ghost, and so are its sides, which carry mask 0.  The facet still has
+     exactly two sides -- one followable, one not -- and the side-count check
+     has to see both, or every cut face in a decomposed mesh reports a
+     spurious "has 1 sides". */
+  Mesh mesh;
+  Brick::attach_serial_transport(mesh);
+  Brick::build(audit_spec(), mesh);
+
+  /* Ghost a whole zone, the way a decomposition does: the zone, every side
+     that names it, and every corner that names it all go to mask 0
+     together. */
+  auto const &s2z = mesh.ds->caccess_intv("m:s>z");
+  auto const &c2z = mesh.ds->caccess_intv("m:c>z");
+  int ghost_zone = -1;
+  for (int z = 0; z < mesh.zones.size(); ++z)
+    if (mesh.zones.mask[static_cast<size_t>(z)] > 0) {
+      ghost_zone = z;
+      break;
+    }
+  REQUIRE(ghost_zone >= 0);
+  mesh.zones.mask[static_cast<size_t>(ghost_zone)] = 0;
+  for (int s = 0; s < mesh.sides.size(); ++s)
+    if (s2z[static_cast<size_t>(s)] == ghost_zone)
+      mesh.sides.mask[static_cast<size_t>(s)] = 0;
+  for (int c = 0; c < mesh.corners.size(); ++c)
+    if (c2z[static_cast<size_t>(c)] == ghost_zone)
+      mesh.corners.mask[static_cast<size_t>(c)] = 0;
+
+  SOA_Idx::Audit_Options opts;
+  opts.geometry = false;
+  opts.masks = false;
+  opts.derived = false;
+  opts.parallel = false;
+
+  std::ostringstream report;
+  [[maybe_unused]] auto const res = SOA_Idx::audit(mesh, report, opts);
+  INFO(report.str());
+  CHECK_THAT(report.str(),
+      !Catch::Matchers::ContainsSubstring("(face, edge) side counts"));
+}
+
 TEST_CASE("audit: the iota maps are checked", "[brick][audit]") {
   SECTION("a consistent set of iotas passes") {
     Mesh mesh;
@@ -457,6 +501,18 @@ TEST_CASE("audit: corruption is detected", "[brick][audit]") {
     CHECK_FALSE(res.ok());
     CHECK_THAT(
         report.str(), Catch::Matchers::ContainsSubstring("m:s>s2 pairing"));
+  }
+
+  SECTION("a facet that does not have two sides") {
+    /* Moving a side to another face leaves its old (face, edge) with one
+       side and its new one with three. */
+    auto &s2f = mesh.ds->access_intv("m:s>f");
+    s2f[0] = s2f[0] == 1 ? 2 : 1;
+    auto const res = SOA_Idx::audit(mesh, report, opts);
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("(face, edge) side counts"));
   }
 
   SECTION("m:s>c1 pointing at the wrong corner") {
