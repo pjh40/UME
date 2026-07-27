@@ -170,8 +170,21 @@ Three notes:
   between what a graph edge-cut minimizes and what goes on the wire. It is the
   reason `metis-kway-cut` is expected to lose to `kahypar` in phase 4.
 
+**Phase 2, commit 13's CMake prerequisite complete.** `add_subdirectory(test)`
+moved out of `cmake/pkgs/Catch2Support.cmake` and into the top-level
+`CMakeLists.txt` after `add_subdirectory(src)`, plus the first scope-statement
+`message(STATUS)` in `test/CMakeLists.txt`. All three trees green at 109/109.
+
+The defect was reproduced rather than reasoned about: with the message in place
+but the move not yet made, a fresh `-DUSE_MPI=ON` configure prints `Tests: no
+MPI` and then `Found MPI: TRUE` three lines later. After the move the same fresh
+configure prints `Tests: MPI is available (.../mpiexec)`, and a fresh configure
+with MPI off prints the `no MPI` line. Both branches are therefore known-correct
+on a *fresh* tree, which is the case that was broken.
+
 **Next: Phase 2, commit 13** — the MPI numerical-equivalence CTest, with the
-global-id side-car and an `ume_mpi` reference-compare option.
+global-id side-car and an `ume_mpi` reference-compare option. The guard it needs
+is now in `test/CMakeLists.txt` with an empty body; commit 13 fills it in.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

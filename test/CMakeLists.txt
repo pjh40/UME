@@ -8,6 +8,30 @@ if(NOT TARGET Ume)
     "test/ must be added after src/, from the top-level CMakeLists.txt")
 endif()
 
+#############################################################################
+# What this suite covers on this machine
+#############################################################################
+# Which options a tree is built with is a property of the machine, not of the
+# project: MPI, UME_SERIAL and OpenACC are each built where the hardware and
+# the site support them, so every combination is a configuration somebody
+# runs, each has to be green, and each has to say what it covered.  A test
+# that cannot run here is not registered -- an unguarded add_test does not
+# skip, it reports `Unable to find executable` and fails -- so every
+# optional-feature guard is paired with a message(STATUS) saying so.  Without
+# it a silent if() would take away the one thing a user comparing their
+# results against someone else's needs.
+#
+# The guards can only be written that way because this directory is added
+# from the top-level CMakeLists.txt after add_subdirectory(src).  A target
+# from src/ and a variable a pkgs/ module set are both visible here on a
+# fresh configure.
+
+if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
+  message(STATUS "Tests: MPI is available (${MPIEXEC_EXECUTABLE})")
+else()
+  message(STATUS "Tests: no MPI, so multi-rank tests are not registered")
+endif()
+
 # UME standard tests
 
 add_executable(ume_tests
