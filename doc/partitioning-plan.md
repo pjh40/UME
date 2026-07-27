@@ -692,8 +692,10 @@ Then ~15 lines in `gen_brick.cc`: `--ranks N --method M` calls `Part::make`,
 
    Wire as `ume_partition --check`, and extend `ume_serial --audit` to audit *every*
    rank rather than only `ranks[0]` and then run `check_partitions` (fix R1 first).
-4. **Numerical equivalence under MPI.** CTest guarded by `USE_MPI` +
-   `MPIEXEC_EXECUTABLE`: `gen_brick`, `ume_partition --ranks 2`, `mpirun -n 2
+4. **Numerical equivalence under MPI.** CTest guarded by `TARGET ume_mpi` +
+   `MPIEXEC_EXECUTABLE` — *not* by `USE_MPI`, and not from where
+   `test/CMakeLists.txt` sits today; see "Commit 13 needs a CMake fix first"
+   under Phasing: `gen_brick`, `ume_partition --ranks 2`, `mpirun -n 2
    ume_mpi`, compare `zgrad` against serial. Needs a global-id side-car
    (`<base>.%05d.gid` under a flag) rather than a file-format change. Relative
    tolerance ~1e-12 — do **not** reuse `test_brick.cc`'s `GRAD_TOL == 0.0`, because
@@ -731,6 +733,13 @@ throughout; `build-mpi/` from commit 1 onward. Phase 4 additionally needs the fo
 library combinations — configure each as a throwaway tree rather than reconfiguring
 in place, since `SimplePkg` caches its result in `CHECK_<PKG>_DONE` and will not
 re-probe.
+
+These three trees are what *this* development environment can cover, not what a
+user is expected to have. Options are enabled where the hardware and the site
+support them, so a build with none of MPI, OpenACC or the partitioning libraries
+is an ordinary configuration and must be green on its own terms. Nothing in this
+plan may make a test's *presence* depend on an option without also making its
+absence visible — see "Commit 13 needs a CMake fix first" under Phase 2.
 
 ### Phase 0 — prep. Four independent commits, no new features.
 
@@ -770,6 +779,78 @@ all three are right.
 | 11 | `Audit every rank in ume_serial` | `src/ume_serial.cc` — all ranks, then `check_partitions` |
 | 12 | `Add partition metrics and reporting` | `Partition_Metrics.hh/.cc`, `--metrics --metrics-csv --comm-matrix` |
 | 13 | `Compare partitioned and serial gradients under MPI` | CTest guarded by `USE_MPI`, global-id side-car, `ume_mpi` reference-compare option |
+
+#### Commit 13 needs a CMake fix first, in its own commit
+
+**Which options a tree is built with is a property of the machine, not of the
+project.** MPI, `UME_SERIAL`, OpenACC, and later METIS and Mt-KaHyPar are each
+built by the users whose hardware and site support them, so *every* combination
+is a configuration somebody runs, and every one of them has to be green and has
+to say what it covered. Commit 13 is the first test that is not universal, so
+it is where that gets settled.
+
+The obvious guard does not work, and fails in the worst available way. Three
+facts, all verified rather than reasoned about:
+
+- **An unguarded `add_test` fails; it does not skip.** `add_test(NAME x COMMAND
+  ume_mpi ...)` in a `USE_MPI=OFF` tree configures cleanly — CMake resolves
+  target names in `COMMAND` at generate time and passes an unknown name through
+  as a literal — and then ctest says `Unable to find executable: ume_mpi` and
+  reports `***Not Run`. A red suite on every build that does not have MPI.
+- **`test/` is processed before `find_package(MPI)` runs.** The top-level
+  `CMakeLists.txt` has `include(pkgs/Catch2Support)` at line 31 and
+  `include(pkgs/MPISupport)` at line 34, and it is `Catch2Support.cmake` that
+  calls `add_subdirectory(test)`. So inside `test/CMakeLists.txt`:
+
+  | | `USE_MPI` | `MPIEXEC_EXECUTABLE` |
+  |---|---|---|
+  | fresh `-DUSE_MPI=ON` | `ON` | **empty** |
+  | reconfigure of that same tree | `ON` | populated |
+
+  `USE_MPI` survives because `-D` writes it to the cache before any
+  `CMakeLists.txt` runs; `MPIEXEC_EXECUTABLE` does not exist yet on the first
+  pass and is only read back from the cache on the second. So
+  `if(USE_MPI AND MPIEXEC_EXECUTABLE)` — what this plan said above — silently
+  drops the MPI tests on a fresh CI configure and quietly enables them on a
+  developer's rebuild. Absent-and-green is worse than either failing or
+  skipping, because nobody goes looking.
+- **`if(TARGET ume_mpi)` is always false there** for the same reason:
+  `add_subdirectory(src)` is line 38.
+
+Nothing about this is specific to MPI. `Catch2Support` is line 31 and
+`add_subdirectory(src)` is line 38, so *every* variable and target that
+`KokkosSupport`, `MPISupport`, `OpenACCSupport` and `libunwindSupport` produce
+is invisible to `test/CMakeLists.txt` on a fresh configure and visible on the
+next one. (`UME_SERIAL` is the exception, and only by luck: it is set at line 25,
+before Catch2.) Phase 4's `METISSupport` and `KaHyParSupport` will want to gate
+tests the same way, so fixing it here fixes it for them.
+
+**The fix.** Move `add_subdirectory(test)` out of `cmake/pkgs/Catch2Support.cmake`
+and into the top-level `CMakeLists.txt` after `add_subdirectory(src)`. A `pkgs/`
+module adding a subdirectory is the actual layering violation — every other one
+only finds a package — and moving it makes every optional feature's variables
+right on a fresh configure *and* makes target checks usable. Then, in
+`test/CMakeLists.txt`, gate on the target rather than on the option, because the
+target existing is what the test actually needs:
+
+```cmake
+if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
+  # ... the numerical-equivalence tests ...
+else()
+  message(STATUS "No MPI: skipping the partitioned-gradient equivalence tests")
+endif()
+```
+
+Register conditionally rather than registering always and skipping with
+`SKIP_RETURN_CODE`: a test that cannot run on this machine is not a pending
+test, and not existing is already what the suite does for optional things. What
+the `message(STATUS ...)` buys is that a green run states its own scope — the
+one thing a user comparing their results against someone else's needs, and the
+thing a silent `if()` alone would take away. Every optional-feature guard added
+from here on gets one.
+
+This is a pre-existing defect on the R0–R7 pattern, so it lands as its own
+commit ahead of the feature, with the `message` lines as its visible effect.
 
 ### Phase 3 — the zero-dependency methods.
 
