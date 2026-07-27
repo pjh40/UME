@@ -22,6 +22,7 @@
 #include <functional>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace Ume {
 namespace Part {
@@ -72,8 +73,14 @@ std::vector<int> zone_weights(SOA_Idx::Mesh const &mesh, Options const &opt) {
   return w;
 }
 
-std::array<double, 3> centroid_extent(
+namespace {
+
+//! The corners of the smallest box holding the centroids of the zones `v`
+/*! Both corners are the origin when `v` is empty. */
+std::pair<std::array<double, 3>, std::array<double, 3>> centroid_bounds(
     std::span<int const> v, DS_Types::VEC3V_T const &zcoord) {
+  if (v.empty())
+    return {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
   std::array<double, 3> lo, hi;
   lo.fill(std::numeric_limits<double>::max());
   hi.fill(std::numeric_limits<double>::lowest());
@@ -83,10 +90,17 @@ std::array<double, 3> centroid_extent(
       lo[d] = std::min(lo[d], x);
       hi[d] = std::max(hi[d], x);
     }
-  std::array<double, 3> ext{0.0, 0.0, 0.0};
-  if (!v.empty())
-    for (std::size_t d = 0; d < 3; ++d)
-      ext[d] = hi[d] - lo[d];
+  return {lo, hi};
+}
+
+} // namespace
+
+std::array<double, 3> centroid_extent(
+    std::span<int const> v, DS_Types::VEC3V_T const &zcoord) {
+  auto const [lo, hi] = centroid_bounds(v, zcoord);
+  std::array<double, 3> ext;
+  for (std::size_t d = 0; d < 3; ++d)
+    ext[d] = hi[d] - lo[d];
   return ext;
 }
 
@@ -256,6 +270,54 @@ Vec3 principal_axis(std::span<int const> v, DS_Types::VEC3V_T const &zcoord,
       cov[i][j] /= W;
 
   return dominant_eigenvector(cov);
+}
+
+std::uint64_t morton_index(std::array<std::uint32_t, 3> const &q, int bits) {
+  /* One bit of each axis per level, most significant level first.  The
+     bit-twiddled version of this is a well known page of magic constants; at
+     one call per zone of a one-off setup pass it buys nothing worth the
+     reader's time. */
+  std::uint64_t m = 0;
+  for (int j = bits - 1; j >= 0; --j)
+    for (std::size_t i = 0; i < 3; ++i)
+      m = (m << 1) | ((q[i] >> j) & 1u);
+  return m;
+}
+
+std::uint64_t hilbert_index(std::array<std::uint32_t, 3> const &q, int bits) {
+  std::uint32_t const mask = (1u << bits) - 1u;
+  std::array<std::uint32_t, 3> x{q[0] & mask, q[1] & mask, q[2] & mask};
+  std::uint32_t const M = 1u << (bits - 1);
+
+  /* Skilling's AxestoTranspose, "Programming the Hilbert curve" (2004).  The
+     first loop reflects and rotates each level's octant into the orientation
+     the level above left it in -- the undo of the recursive construction --
+     and the second Gray-codes the result, after which the coordinates hold
+     the index in transposed form: axis i carries every third bit of it. */
+  for (std::uint32_t Q = M; Q > 1; Q >>= 1) {
+    std::uint32_t const P = Q - 1;
+    for (std::size_t i = 0; i < 3; ++i) {
+      if (x[i] & Q)
+        x[0] ^= P; //!< invert
+      else {
+        std::uint32_t const t = (x[0] ^ x[i]) & P;
+        x[0] ^= t; //!< exchange
+        x[i] ^= t;
+      }
+    }
+  }
+  for (std::size_t i = 1; i < 3; ++i)
+    x[i] ^= x[i - 1];
+  std::uint32_t t = 0;
+  for (std::uint32_t Q = M; Q > 1; Q >>= 1)
+    if (x[2] & Q)
+      t ^= Q - 1;
+  for (std::size_t i = 0; i < 3; ++i)
+    x[i] ^= t;
+
+  /* Undoing the transpose is the same interleave Morton wants, which is why
+     `morton_index` puts x in the high bit of each triple. */
+  return morton_index(x, bits);
 }
 
 void split_sorted(std::span<int const> v, std::span<double const> key,
@@ -560,6 +622,66 @@ private:
   char const *describe_;
 };
 
+//! Thread a space-filling curve through the mesh and cut it into runs
+class Curve : public Partitioner {
+public:
+  /*! `hilbert` picks the curve that never jumps, as against the Z-order curve
+      that jumps a whole block whenever it crosses a power-of-two boundary. */
+  Curve(bool hilbert, char const *name, char const *describe)
+      : hilbert_{hilbert}, name_{name}, describe_{describe} {}
+
+  char const *name() const override { return name_; }
+  char const *describe() const override { return describe_; }
+
+  void assign(SOA_Idx::Mesh const &mesh, Options const &opt,
+      Zone_Map &z2r) const override {
+    std::vector<int> const v = begin_assign(mesh, opt, z2r);
+    auto const &zcoord = zone_centroids(mesh);
+    std::vector<int> const wgt = zone_weights(mesh, opt);
+
+    /* Put the centroids on the curve's lattice.  The box is the mesh's own,
+       so the resolution goes where the zones are rather than where the origin
+       is; an axis with no extent at all quantizes to zero and contributes
+       nothing to the ordering, which is what a flat mesh wants. */
+    auto const [lo, hi] = centroid_bounds(v, zcoord);
+    double const top = static_cast<double>((1u << CURVE_BITS) - 1u);
+    std::array<double, 3> scale{0.0, 0.0, 0.0};
+    for (std::size_t d = 0; d < 3; ++d)
+      if (hi[d] > lo[d])
+        scale[d] = top / (hi[d] - lo[d]);
+
+    std::vector<std::pair<std::uint64_t, int>> along;
+    along.reserve(v.size());
+    for (int const z : v) {
+      std::array<std::uint32_t, 3> q{};
+      for (std::size_t d = 0; d < 3; ++d) {
+        double const t =
+            (zcoord[static_cast<std::size_t>(z)][d] - lo[d]) * scale[d];
+        q[d] = static_cast<std::uint32_t>(
+            std::clamp(std::llround(t), 0LL, static_cast<long long>(top)));
+      }
+      along.emplace_back(hilbert_ ? hilbert_index(q) : morton_index(q), z);
+    }
+    /* Lexicographic, so zones sharing a lattice cell are ordered by zone index
+       and the cuts do not depend on the sort algorithm. */
+    std::ranges::sort(along);
+
+    /* Hand `split_sorted` each zone's *position* along the curve rather than
+       its index: a 63-bit index does not survive the trip through a `double`
+       key, and only the order matters. */
+    std::vector<double> key(static_cast<std::size_t>(mesh.zones.size()), 0.0);
+    for (std::size_t i = 0; i < along.size(); ++i)
+      key[static_cast<std::size_t>(along[i].second)] = static_cast<double>(i);
+
+    split_sorted(v, key, wgt, 0, opt.nparts, z2r);
+  }
+
+private:
+  bool hilbert_;
+  char const *name_;
+  char const *describe_;
+};
+
 //! Cut the mesh into contiguous runs of the original zone numbering
 class Linear : public Partitioner {
 public:
@@ -586,7 +708,11 @@ public:
 constexpr Method TABLE[] = {
     {"block", "a grid of boxes, shaped to the extents of the mesh", nullptr,
         true},
+    {"hilbert", "equal runs of a Hilbert curve through the zones", nullptr,
+        true},
     {"linear", "contiguous ranges of the input zone numbering", nullptr, true},
+    {"morton", "equal runs of a Morton (Z-order) curve through the zones",
+        nullptr, true},
     {"pencil", "columns spanning the shortest extent of the mesh", nullptr,
         true},
     {"rcb", "recursive bisection normal to each piece's longest axis", nullptr,
@@ -624,8 +750,12 @@ std::unique_ptr<Partitioner> make(std::string_view name) {
     return nullptr;
   if (name == "block")
     return std::make_unique<Block>(3, m->name, m->describe);
+  if (name == "hilbert")
+    return std::make_unique<Curve>(true, m->name, m->describe);
   if (name == "linear")
     return std::make_unique<Linear>();
+  if (name == "morton")
+    return std::make_unique<Curve>(false, m->name, m->describe);
   if (name == "pencil")
     return std::make_unique<Block>(2, m->name, m->describe);
   if (name == "rcb")

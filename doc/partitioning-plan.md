@@ -298,8 +298,42 @@ On a pure-hex 8×6×4 brick split eight ways, `rcb` and `rib` both give
 `point_lambda1` 165 — identical to `block`, because recursive bisection of a
 box by powers of two *is* the grid — against 245 for `slab-x`.
 
-Next: `morton`/`hilbert`, `roundrobin`/`random`, and `bfs` — one commit per
-group.
+**Phase 3, commit 16 complete.** `CURVE_BITS`, `morton_index`,
+`hilbert_index` (Skilling's transpose) and the `morton`/`hilbert` methods in
+`Partition.cc`, plus three Catch2 tests. All three trees green at 121/121, and
+125/125 with MPI.
+
+Four notes:
+
+- **`bits` is a parameter of both index functions, and that is what makes them
+  testable.** At the production 21 bits the lattice has 2^63 cells, so the
+  defining properties — bijection onto `[0, 8^bits)`, and consecutive indices
+  always one lattice step apart — can only be checked by enumeration on a small
+  lattice. The test does `bits` ∈ {1,2,3} and pins Morton's worst step at
+  `2*n-1` in the same loop, so the one property the two curves differ in is a
+  measured number rather than a claim.
+- `morton_index` interleaves with **x in the high bit of each triple**, not the
+  usual low one. That is deliberate: it is exactly the order Skilling's
+  transpose has to be read out in, so `hilbert_index` ends with
+  `return morton_index(x, bits)` and there is one interleave rather than two.
+- **The key handed to `split_sorted` is the zone's *position* along the curve,
+  not its index.** A 63-bit index does not survive a `double`, and only the
+  order matters. Sorting `(index, zone)` lexicographically also gives the
+  tie-break the rest of the file uses.
+- The headline claim needed weakening against measurement, twice. Hilbert beats
+  Morton **over a sweep of part counts, not pointwise** — on an 8-cube it wins
+  at 3, 5, 7, 9, 10, 11, ties at 12, and *loses* at 6 (345 vs 337); summed over
+  {3,5,6,7,9,10,11,12} it is 2993 against 3226. And a curve only beats a slab
+  stack from **four parts up**: three parts of a cube is two cuts, and the two
+  cheapest cuts available are the slab's own planes (182, against Hilbert's
+  200). Both are in the test as written, with the reason.
+
+At a part count that divides the curve into whole blocks the two curves agree
+*exactly* — on a 4-cube split eight ways both produce the same eight zone sets
+`block` does, which is the sharpest available check that the quantization,
+ordering and run-splitting line up.
+
+Next: `roundrobin`/`random`, and `bfs` — one commit per group.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

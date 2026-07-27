@@ -170,6 +170,31 @@ std::array<int, 3> dims_create(
 Vec3 principal_axis(std::span<int const> v, DS_Types::VEC3V_T const &zcoord,
     std::span<int const> wgt);
 
+//! Bits per axis a space-filling curve index resolves
+/*! Three axes at 21 bits fill 63 of the 64 bits of the index, which is finer
+    than any mesh we will meet and leaves the index comfortably positive. */
+inline constexpr int CURVE_BITS = 21;
+
+//! The Morton (Z-order) index of a point on the `2^bits` lattice
+/*! The bits of the three coordinates interleaved, most significant level
+    first, with x the most significant of each triple.  That ordering is not
+    the more usual x-in-the-low-bit one, and it is deliberate: it is exactly
+    the ordering `hilbert_index` needs to read its transpose out in, so one
+    interleave serves both curves.  Either is a Z-order; they differ only in
+    which axis the curve sweeps slowest along. */
+std::uint64_t morton_index(
+    std::array<std::uint32_t, 3> const &q, int bits = CURVE_BITS);
+
+//! The Hilbert index of a point on the `2^bits` lattice
+/*! Skilling's transpose algorithm.  Like Morton this is a bijection onto
+    `[0, 8^bits)`, but unlike Morton consecutive indices are always *adjacent*
+    lattice points: the Z-order curve jumps the width of the current block
+    every time it crosses a power-of-two boundary, and a run of it cut into a
+    part therefore straddles the jump.  That difference is what this method
+    exists to measure. */
+std::uint64_t hilbert_index(
+    std::array<std::uint32_t, 3> const &q, int bits = CURVE_BITS);
+
 //! Split the zones `v` into `k` groups of equal weight, ordered by `key`
 /*! `key` and `wgt` are indexed by *zone index*, not by position in `v`, so a
     recursive method can split a subset without recompacting anything; `wgt`

@@ -32,6 +32,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include <cstdint>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -442,6 +443,147 @@ TEST_CASE("partition: the two bisections agree on an axis-aligned mesh",
     Part::make("rib")->assign(mesh, opt, rib);
     CHECK(rcb == rib);
   }
+}
+
+TEST_CASE("partition: the two curves differ in exactly one property",
+    "[partition]") {
+  /* Both curves have to be bijections onto `[0, 8^bits)` -- a curve that
+     misses a lattice cell or visits one twice would order the zones by
+     something that is not a curve at all -- and the whole difference between
+     them is what happens between consecutive indices.  The Hilbert curve
+     always steps to a neighbouring cell; the Z-order curve jumps the width of
+     the block it is leaving every time it crosses a power-of-two boundary,
+     which is what makes a run of it a worse-shaped part.
+
+     `bits` is a parameter precisely so that this is checkable: at the
+     production 21 bits the lattice has 2^63 cells in it. */
+  for (int bits : {1, 2, 3}) {
+    INFO("bits=" << bits);
+    int const n = 1 << bits;
+    auto const cells = static_cast<std::size_t>(n) * n * n;
+
+    for (bool hilbert : {false, true}) {
+      INFO((hilbert ? "hilbert" : "morton"));
+      std::map<std::uint64_t, std::array<int, 3>> seen;
+      for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+          for (int k = 0; k < n; ++k) {
+            std::array<std::uint32_t, 3> const q{
+                static_cast<std::uint32_t>(i), static_cast<std::uint32_t>(j),
+                static_cast<std::uint32_t>(k)};
+            std::uint64_t const h = hilbert ? Part::hilbert_index(q, bits)
+                                            : Part::morton_index(q, bits);
+            INFO("at (" << i << ", " << j << ", " << k << ')');
+            REQUIRE(h < cells);
+            REQUIRE(seen.emplace(h, std::array<int, 3>{i, j, k}).second);
+          }
+      REQUIRE(seen.size() == cells);
+
+      /* `std::map` walks in index order, so consecutive entries are
+         consecutive points of the curve. */
+      int longest = 0;
+      auto prev = seen.begin()->second;
+      for (auto const &[h, p] : seen) {
+        longest = std::max(longest,
+            std::abs(p[0] - prev[0]) + std::abs(p[1] - prev[1]) +
+                std::abs(p[2] - prev[2]));
+        prev = p;
+      }
+      CHECK(longest == (hilbert ? 1 : 2 * n - 1));
+    }
+  }
+
+  /* The interleave puts x in the high bit of each triple, which is the
+     ordering `hilbert_index` reads its transpose out in. */
+  CHECK(Part::morton_index({1, 0, 0}, 1) == 4);
+  CHECK(Part::morton_index({0, 1, 0}, 1) == 2);
+  CHECK(Part::morton_index({0, 0, 1}, 1) == 1);
+}
+
+TEST_CASE("partition: a curve cuts a cube into octants", "[partition]") {
+  /* Eight parts of a cube is the case where a curve method has nothing to do
+     but be right: the first eight blocks of either curve are the eight
+     octants, so both have to produce exactly the parts `block` does -- not
+     merely the same communication cost, the same zones.  That pins the
+     quantization, the ordering and the run-splitting together, and neither the
+     order the curve visits the octants in nor the part numbering matters, so
+     the parts are compared as a set. */
+  Brick::Spec spec;
+  spec.nx = 4;
+  spec.ny = 4;
+  spec.nz = 4;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  auto parts_of = [&](char const *method) {
+    Part::Options opt;
+    opt.nparts = 8;
+    Part::Zone_Map z2r;
+    Part::make(method)->assign(mesh, opt, z2r);
+    std::vector<std::vector<int>> parts(8);
+    for (int const z : Part::real_zones(mesh))
+      parts[static_cast<std::size_t>(z2r[static_cast<std::size_t>(z)])]
+          .push_back(z);
+    std::ranges::sort(parts);
+    return parts;
+  };
+  auto const blocks = parts_of("block");
+  REQUIRE(blocks.front().size() == 8);
+  CHECK(parts_of("morton") == blocks);
+  CHECK(parts_of("hilbert") == blocks);
+}
+
+TEST_CASE("partition: the Hilbert curve's runs beat the Z-order curve's",
+    "[partition]") {
+  /* This is the reason `hilbert` exists next to `morton`.  Where the part
+     count divides the curve into whole blocks the two agree exactly -- the
+     octant test above is that case -- so the comparison has to be made at the
+     counts where a run gets cut inside a block, and it is Morton's jump across
+     that cut that costs.
+
+     The claim is about the method over a range of part counts, not about any
+     one of them: a count whose cuts happen to fall near a block boundary can
+     land either way, and n=6 here does favour Morton.  That is the phenomenon
+     rather than noise, so the test sums the sweep instead of pretending each
+     count is a separate result. */
+  Brick::Spec spec;
+  spec.nx = 8;
+  spec.ny = 8;
+  spec.nz = 8;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  auto measure = [&](char const *method, int nparts) {
+    Part::Options opt;
+    opt.nparts = nparts;
+    Part::Zone_Map z2r;
+    Part::make(method)->assign(mesh, opt, z2r);
+    return Part::measure(
+        mesh, Part::build_decomposition(mesh, std::move(z2r), nparts));
+  };
+
+  long morton = 0, hilbert = 0;
+  for (int nparts : {3, 5, 6, 7, 9, 10, 11, 12}) {
+    Part::Metrics const m = measure("morton", nparts);
+    Part::Metrics const h = measure("hilbert", nparts);
+    morton += m.kinds[Part::POINT].duplicated;
+    hilbert += h.kinds[Part::POINT].duplicated;
+
+    /* Whichever of the two wins, a curve follows the mesh in all three
+       dimensions where a slab only follows one -- but only once there are
+       enough parts for that to be worth anything.  Three parts of a cube is
+       two cuts, and the two smallest cuts available are the two planes a slab
+       stack makes; a curve cannot beat that and does not.  By four the slab's
+       parts are plates and the gap opens and keeps widening. */
+    if (nparts >= 4) {
+      Part::Metrics const s = measure("slab-x", nparts);
+      INFO("nparts=" << nparts);
+      CHECK(m.kinds[Part::POINT].duplicated < s.kinds[Part::POINT].duplicated);
+      CHECK(h.kinds[Part::POINT].duplicated < s.kinds[Part::POINT].duplicated);
+      CHECK(h.max_surface_to_volume < s.max_surface_to_volume);
+    }
+  }
+  CHECK(hilbert < morton);
 }
 
 TEST_CASE("partition: nparts must be positive", "[partition]") {
