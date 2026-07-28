@@ -265,6 +265,14 @@ constexpr bool HAVE_METIS =
     true;
 #endif
 
+//! Was this build configured with Mt-KaHyPar?
+constexpr bool HAVE_KAHYPAR =
+#ifdef NO_KAHYPAR
+    false;
+#else
+    true;
+#endif
+
 /*! The methods this source knows about.  Entries whose `requires_pkg` is set
     are compiled in or out with the package they need, but stay in the table
     either way so that an unavailable method reads differently from a
@@ -275,6 +283,12 @@ constexpr Method TABLE[] = {
         true},
     {"hilbert", "equal runs of a Hilbert curve through the zones", nullptr,
         true},
+    {"kahypar", "Mt-KaHyPar, minimizing the points on the wire", "Mt-KaHyPar",
+        HAVE_KAHYPAR},
+    {"kahypar-det", "Mt-KaHyPar, reproducibly, at some cost in quality",
+        "Mt-KaHyPar", HAVE_KAHYPAR},
+    {"kahypar-quality", "Mt-KaHyPar with flow-based refinement; slower",
+        "Mt-KaHyPar", HAVE_KAHYPAR},
     {"linear", "contiguous ranges of the input zone numbering", nullptr, true},
     {"metis-kway-cut", "METIS k-way, minimizing the weight of the cut faces",
         "METIS", HAVE_METIS},
@@ -333,6 +347,8 @@ std::unique_ptr<Partitioner> make(std::string_view name) {
   if (auto p = make_bfs(*m))
     return p;
   if (auto p = make_metis(*m))
+    return p;
+  if (auto p = make_kahypar(*m))
     return p;
   return nullptr;
 }

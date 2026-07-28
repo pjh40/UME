@@ -42,6 +42,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 using namespace Ume;
@@ -965,6 +966,67 @@ TEST_CASE("partition: the dual graph weighs the edges it was asked to",
       }
     }
   }
+}
+
+TEST_CASE("partition: the hypergraph is the points over the real zones",
+    "[partition]") {
+  /* The dual graph is checked above against `Metrics::interior_faces`, which
+     walks the mesh a different way; there is no such second opinion for the
+     nets, so this checks them against `m:p>zs` itself and against the
+     structure the C API requires -- row starts monotone from 0, pins in
+     range, ascending and distinct within a net. */
+  Mesh mesh;
+  brick(mixed_spec(), mesh);
+  auto const &zmask = mesh.zones.mask;
+  auto const &p2zs = mesh.ds->caccess_intrr("m:p>zs");
+
+  Part::Options opt;
+  Part::Zone_Hypergraph const h = Part::build_zone_hypergraph(mesh, opt);
+  std::vector<int> const real = Part::real_zones(mesh);
+  REQUIRE(h.nverts == static_cast<int>(real.size()));
+  REQUIRE(h.v2z == real);
+  REQUIRE(h.net_index.size() == static_cast<std::size_t>(h.nnets) + 1);
+  REQUIRE(h.net_index.front() == 0);
+  REQUIRE(h.net_index.back() == h.net_pins.size());
+  REQUIRE(h.netwgt == std::vector<int>(static_cast<std::size_t>(h.nnets), 1));
+  REQUIRE(h.vwgt.size() == static_cast<std::size_t>(h.nverts));
+  CHECK(std::ranges::is_sorted(h.net2p));
+
+  /* The vertex weights are the zone weights, floored at 1 so that no
+     partitioner has to divide by a zero total. */
+  std::vector<int> const zwgt = Part::zone_weights(mesh, opt);
+  for (int v = 0; v < h.nverts; ++v) {
+    int const z = h.v2z[static_cast<std::size_t>(v)];
+    REQUIRE(h.vwgt[static_cast<std::size_t>(v)] ==
+        std::max(1, zwgt[static_cast<std::size_t>(z)]));
+  }
+
+  //! The real zones touching point `p`, as vertices, ascending and distinct
+  auto want_pins = [&](int p) {
+    std::set<int> s;
+    for (int const z : p2zs[p])
+      if (zmask[z] >= 1)
+        s.insert(h.z2v[static_cast<std::size_t>(z)]);
+    return std::vector<int>(s.begin(), s.end());
+  };
+
+  int net = 0;
+  for (int p = 0; p < mesh.points.size(); ++p) {
+    std::vector<int> const want = want_pins(p);
+    /* A point that only one real zone touches is a net no cut can separate,
+       so it is left out -- and on a brick this small that is most of them:
+       only the interior points have two zones or more. */
+    if (want.size() < 2)
+      continue;
+    INFO("point " << p);
+    REQUIRE(net < h.nnets);
+    CHECK(h.net2p[static_cast<std::size_t>(net)] == p);
+    std::span<int const> const pins = h.pins(net);
+    CHECK(std::vector<int>(pins.begin(), pins.end()) == want);
+    ++net;
+  }
+  CHECK(net == h.nnets);
+  CHECK(h.nnets < mesh.points.size()); //!< the surface really was dropped
 }
 
 TEST_CASE("partition: growing a part never looks at a coordinate",
@@ -2263,4 +2325,198 @@ TEST_CASE("metrics: the CSV row matches its header", "[partition]") {
   for (std::string line; std::getline(in, line); ++rows)
     CHECK(fields(line) == d.nparts);
   CHECK(rows == d.nparts);
+}
+
+/* --------------------------------- KaHyPar -------------------------------- */
+
+namespace {
+
+//! Was this build configured with Mt-KaHyPar?
+bool have_kahypar() {
+  Part::Method const *const m = Part::find_method("kahypar");
+  return m != nullptr && m->available;
+}
+
+//! The three presets, which differ in quality and in reproducibility
+constexpr char const *KAHYPAR_METHODS[] = {
+    "kahypar", "kahypar-quality", "kahypar-det"};
+
+} // namespace
+
+TEST_CASE("partition: the nets count the traffic the metrics do",
+    "[partition]") {
+  /* The claim the whole Mt-KaHyPar dependency rests on, and it needs no
+     library to check.  Sum(lambda-1) over the nets of `Zone_Hypergraph` is
+     not a model of UME's point exchange: it is the count of elements in one
+     direction of one `points.gathscat()`, which `Partition_Metrics` arrives
+     at from entirely the other end, by building the decomposition and
+     counting the copies `extract` will make.
+
+     So the two are held against each other over the whole sweep -- every
+     method this build has, every part count, three meshes -- and no tolerance
+     appears, because they are the same number.  Were this to fail, the
+     hypergraph would have stopped describing the mesh being decomposed and
+     `kahypar` would be minimizing something else. */
+  for (Case const &c : cases()) {
+    INFO(c.describe());
+    Mesh mesh;
+    brick(c.spec, mesh);
+    Part::Options opt;
+    opt.nparts = c.nparts;
+    Part::Zone_Map z2r;
+    Part::make(c.method)->assign(mesh, opt, z2r);
+    Part::Zone_Hypergraph const h = Part::build_zone_hypergraph(mesh, opt);
+
+    long km1 = 0;
+    for (int e = 0; e < h.nnets; ++e) {
+      std::set<int> blocks;
+      for (int const v : h.pins(e))
+        blocks.insert(
+            z2r[static_cast<std::size_t>(h.v2z[static_cast<std::size_t>(v)])]);
+      km1 += static_cast<long>(blocks.size()) - 1;
+    }
+
+    Part::Metrics const m = Part::measure(
+        mesh, Part::build_decomposition(mesh, std::move(z2r), c.nparts));
+    CHECK(km1 == m.kinds[Part::POINT].duplicated);
+  }
+}
+
+TEST_CASE("kahypar: it minimizes the traffic the others only approximate",
+    "[partition]") {
+  /* The headline experiment.  Every other method here minimizes something
+     *correlated* with what goes on the wire -- cut faces, a volume
+     surrogate, surface area -- and Mt-KaHyPar minimizes the traffic itself,
+     so the question is whether the difference is worth a dependency.
+
+     Measured over 2, 3, 4, 8 and 16 parts of a 12x10x8 half-tet brick, as
+     `point_lambda1` summed: 1806 for `metis-kway-cut`, 1729 for `block` --
+     which is the best of the dependency-free methods here, and is used as
+     their representative rather than sweeping all nine of them at this size.
+     Against those, over repeated runs, `kahypar` lands between 1666 and 1712,
+     `kahypar-quality` between 1592 and 1649, and `kahypar-det` on 1612 every
+     time.
+
+     So all three beat the graph edge cut comfortably, and that is asserted
+     for all three.  Only the two slower presets are asserted against `block`:
+     the fast one does beat it in every run measured, but by around one
+     percent against a spread of nearly three, which would be a flake rather
+     than a finding.
+
+     The margins are why this mesh is bigger than the one the rest of the file
+     uses.  On the 8x6x4 brick everything lands within a couple of percent of
+     everything else -- a brick split by powers of two is nearly optimal
+     already -- and the gap does not clear the run-to-run spread. */
+  if (!have_kahypar())
+    SKIP("this build was configured without Mt-KaHyPar");
+
+  Brick::Spec spec;
+  spec.nx = 12;
+  spec.ny = 10;
+  spec.nz = 8;
+  spec.tet_fraction = 0.5;
+  Mesh mesh;
+  brick(spec, mesh);
+  static constexpr int COUNTS[] = {2, 3, 4, 8, 16};
+
+  auto total_lambda1 = [&](std::string const &method) {
+    long sum = 0;
+    for (int nparts : COUNTS)
+      sum += cost(mesh, method, nparts).kinds[Part::POINT].duplicated;
+    return sum;
+  };
+
+  long const grid = total_lambda1("block");
+  long const edge_cut = have_metis() ? total_lambda1("metis-kway-cut") : -1;
+
+  for (char const *method : KAHYPAR_METHODS) {
+    long const got = total_lambda1(method);
+    INFO(method << ": " << got << ", block " << grid << ", metis-kway-cut "
+                << edge_cut);
+    if (edge_cut > 0)
+      CHECK(got < edge_cut);
+    if (std::string_view{method} != "kahypar")
+      CHECK(got < grid);
+  }
+}
+
+TEST_CASE("kahypar: only the deterministic preset repeats itself",
+    "[partition]") {
+  /* `Options::seed` promises that fixing it fixes the partition, and two of
+     these three presets cannot keep that promise: they refine in parallel,
+     and which thread reaches a move first decides the answer.  That is not a
+     seed the library forgot to use -- `mt_kahypar_set_seed` is called before
+     every run here -- and it is why `kahypar-det` exists.
+
+     What is asserted is only that the deterministic preset is deterministic,
+     within one process and one thread pool.  That the other two are *not* is
+     a measurement rather than a contract: on a small enough mesh they will
+     agree by luck, so requiring them to differ would be the flaky test.
+
+     The consequence for the rest of this file is worth stating plainly: the
+     sweep picks its methods up from `Part::methods()`, so every test using
+     `cases()` runs on a *different* `kahypar` partition each time it is run.
+     That is a fuzz test and a good one -- the audit, the cross-rank check and
+     the metrics must hold for any valid zone map -- but a failure of one of
+     them naming `kahypar` may not reproduce, and the zone map it happened on
+     is gone.  `--dump-zone-map` is how to catch one if it ever happens. */
+  if (!have_kahypar())
+    SKIP("this build was configured without Mt-KaHyPar");
+
+  Mesh mesh;
+  brick(big_spec(0.5), mesh);
+  Part::Options opt;
+  opt.nparts = 8;
+
+  Part::Zone_Map first, second;
+  Part::make("kahypar-det")->assign(mesh, opt, first);
+  Part::make("kahypar-det")->assign(mesh, opt, second);
+  CHECK(first == second);
+
+  /* And a different seed is allowed to give a different answer, which is the
+     other half of what the option means.  Not required to: the two runs are
+     only checked to be valid, since a coarsening that finds the same optimum
+     from two seeds is a good partitioner rather than a broken one. */
+  opt.seed += 1;
+  Part::Zone_Map third;
+  Part::make("kahypar-det")->assign(mesh, opt, third);
+  REQUIRE(third.size() == first.size());
+  for (std::size_t z = 0; z < third.size(); ++z)
+    REQUIRE(third[z] < opt.nparts);
+}
+
+TEST_CASE("kahypar: the part counts it declines are answered anyway",
+    "[partition]") {
+  /* As for METIS: one part and more parts than zones are both things a user
+     types, each has one sensible answer, and it has to be the same answer
+     every other method gives or the sweep's contracts would hold for some
+     methods and not others. */
+  if (!have_kahypar())
+    SKIP("this build was configured without Mt-KaHyPar");
+
+  Brick::Spec spec;
+  spec.nx = 2;
+  spec.ny = 1;
+  spec.nz = 1;
+  Mesh mesh;
+  brick(spec, mesh);
+  std::vector<int> const real = Part::real_zones(mesh);
+  REQUIRE(real.size() == 2);
+
+  Part::Options opt;
+  Part::Zone_Map z2r;
+  for (char const *method : KAHYPAR_METHODS)
+    for (int nparts : {1, 2, 3, 5}) {
+      INFO(method << " nparts=" << nparts);
+      opt.nparts = nparts;
+      REQUIRE_NOTHROW(Part::make(method)->assign(mesh, opt, z2r));
+
+      std::vector<int> got;
+      for (int const z : real)
+        got.push_back(z2r[static_cast<std::size_t>(z)]);
+      if (nparts == 1)
+        CHECK(got == std::vector<int>{0, 0});
+      else
+        CHECK(got == std::vector<int>{0, 1});
+    }
 }

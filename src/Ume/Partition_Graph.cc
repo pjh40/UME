@@ -17,6 +17,7 @@
 #include "Ume/VecN.hh"
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 #include <utility>
 
 namespace Ume {
@@ -36,6 +37,12 @@ std::span<int const> Zone_Graph::neighbors(int v) const {
   return std::span<int const>{adjncy.data() + b, e - b};
 }
 
+std::span<int const> Zone_Hypergraph::pins(int e) const {
+  auto const b = net_index[static_cast<std::size_t>(e)];
+  auto const f = net_index[static_cast<std::size_t>(e) + 1];
+  return std::span<int const>{net_pins.data() + b, f - b};
+}
+
 std::span<int const> Zone_Graph::weights(int v) const {
   auto const b = static_cast<std::size_t>(xadj[static_cast<std::size_t>(v)]);
   auto const e =
@@ -44,6 +51,18 @@ std::span<int const> Zone_Graph::weights(int v) const {
 }
 
 namespace {
+
+//! Number the real zones of `mesh` from 0: `v2z` ascending, `z2v` its inverse
+/*! Both graphs number their vertices this way, so a vertex means the same
+    zone in either and one's answer can be read against the other's. */
+std::pair<std::vector<int>, std::vector<int>> compact_real_zones(
+    SOA_Idx::Mesh const &mesh) {
+  std::vector<int> v2z = real_zones(mesh);
+  std::vector<int> z2v(static_cast<std::size_t>(mesh.zones.size()), -1);
+  for (std::size_t v = 0; v < v2z.size(); ++v)
+    z2v[static_cast<std::size_t>(v2z[v])] = static_cast<int>(v);
+  return {std::move(v2z), std::move(z2v)};
+}
 
 //! The number of distinct points on each face, indexed by face
 /*! A face's points are the endpoints of its sides.  Both of the zones behind
@@ -135,11 +154,8 @@ Zone_Graph build_zone_graph(SOA_Idx::Mesh const &mesh, Options const &opt) {
   auto const &f2z2 = mesh.ds->caccess_intv("m:f>z2");
 
   Zone_Graph g;
-  g.v2z = real_zones(mesh);
+  std::tie(g.v2z, g.z2v) = compact_real_zones(mesh);
   g.nverts = static_cast<int>(g.v2z.size());
-  g.z2v.assign(static_cast<std::size_t>(zll), -1);
-  for (int v = 0; v < g.nverts; ++v)
-    g.z2v[static_cast<std::size_t>(g.v2z[static_cast<std::size_t>(v)])] = v;
 
   std::vector<int> const zwgt = zone_weights(mesh, opt);
   g.vwgt.reserve(g.v2z.size());
@@ -186,6 +202,48 @@ Zone_Graph build_zone_graph(SOA_Idx::Mesh const &mesh, Options const &opt) {
     g.xadj[static_cast<std::size_t>(v) + 1] +=
         g.xadj[static_cast<std::size_t>(v)];
   return g;
+}
+
+Zone_Hypergraph build_zone_hypergraph(
+    SOA_Idx::Mesh const &mesh, Options const &opt) {
+  int const zll = mesh.zones.size(), pll = mesh.points.size();
+  auto const &zmask = mesh.zones.mask;
+  auto const &p2zs = mesh.ds->caccess_intrr("m:p>zs");
+
+  Zone_Hypergraph h;
+  std::tie(h.v2z, h.z2v) = compact_real_zones(mesh);
+  h.nverts = static_cast<int>(h.v2z.size());
+
+  /* Floored at 1 for the same reason METIS's are: a partitioner divides by
+     the total weight to work out what a balanced block is, and
+     `Vertex_Weight::SIDES` gives 0 to a zone whose sides are all phantom. */
+  std::vector<int> const zwgt = zone_weights(mesh, opt);
+  h.vwgt.reserve(h.v2z.size());
+  for (int const z : h.v2z)
+    h.vwgt.push_back(std::max(1, zwgt[static_cast<std::size_t>(z)]));
+
+  /* The nets are the rows of `m:p>zs` with the zones that are not real struck
+     out.  A point left with one zone -- every point of the mesh's own outer
+     surface, which on a small brick is most of them -- is a net no cut can
+     ever separate, so it is dropped rather than handed over. */
+  h.net_index.push_back(0);
+  std::vector<int> pins;
+  for (int p = 0; p < pll; ++p) {
+    pins.clear();
+    for (int const z : p2zs[p])
+      if (z >= 0 && z < zll && zmask[z] >= 1)
+        pins.push_back(h.z2v[static_cast<std::size_t>(z)]);
+    std::ranges::sort(pins);
+    pins.erase(std::unique(pins.begin(), pins.end()), pins.end());
+    if (pins.size() < 2)
+      continue;
+    h.net_pins.insert(h.net_pins.end(), pins.begin(), pins.end());
+    h.net_index.push_back(h.net_pins.size());
+    h.net2p.push_back(p);
+  }
+  h.nnets = static_cast<int>(h.net2p.size());
+  h.netwgt.assign(static_cast<std::size_t>(h.nnets), 1);
+  return h;
 }
 
 } // namespace Part

@@ -654,10 +654,71 @@ packages:
     require: '%[when=%c]c=apple-clang %[when=%cxx]cxx=apple-clang'
 ```
 
-Next: `kahypar`/`kahypar-quality` behind `KaHyParSupport.cmake`, which needs
-`build_zone_hypergraph` in `Partition_Graph.cc` — the availability gating,
-the method-table entries and the test-side runtime gate are all now in place
-and generic, so that commit is the hypergraph and the C API call.
+**Phase 4, Mt-KaHyPar complete.** `cmake/pkgs/KaHyParSupport.cmake`,
+`build_zone_hypergraph` in `Partition_Graph.hh/.cc`, `Partition_KaHyPar.cc`,
+three table entries, five Catch2 tests and one gated CTest. All four
+configure combinations were built and run: both libraries 141/141 (and
+145/145 with MPI), METIS only 140/140, Mt-KaHyPar only 140/140, neither
+139/139, with the absent families' tests reported by ctest as `Skipped`.
+
+Five notes:
+
+- **Three methods, not two, and the third one is the reason.** `kahypar`
+  (DEFAULT) and `kahypar-quality` (QUALITY) refine in parallel and race, so
+  the same seed on the same mesh gives a different partition run to run —
+  `kahypar` summed over 2, 3, 4, 8 and 16 parts of a 12×10×8 half-tet brick
+  lands anywhere from 1666 to 1712. `kahypar-det` (DETERMINISTIC) gives 1612
+  every time. That is what keeps `Options::seed`'s promise true for at least
+  one preset rather than growing an exception with nothing behind it, and
+  `--seed`'s help text and the `Options::seed` doc comment both now say which
+  is which. **Determinism did not cost quality here**: `kahypar-det` ties
+  `kahypar-quality`'s midpoint and beats the fast preset outright, which is
+  the opposite of what the note above this one predicted.
+- **`Σ(λ−1)` over the nets is checked against the metrics with no library in
+  sight, over the whole sweep.** `the nets count the traffic the metrics do`
+  computes connectivity-minus-one straight off `Zone_Hypergraph` and a zone
+  map, and compares it with `Metrics::kinds[POINT].duplicated`, which
+  `Partition_Metrics` reaches from the other end by building the
+  decomposition and counting the copies `extract` will make. Every method,
+  every part count, three meshes, no tolerance. That is the plan's central
+  claim turned into a test that runs in *every* build rather than a
+  measurement taken once in a trial program.
+- **The margin over METIS is real but the margin over `block` is thin**, and
+  the test says so rather than rounding it up. On the 12×10×8 mixed brick:
+  1806 for `metis-kway-cut`, 1729 for `block`, against 1612–1712 for the
+  three presets. All three beat the edge cut by 5% or better and that is
+  asserted for all three; only the two slower presets are asserted against
+  `block`, because the fast one clears it by about one percent against a
+  spread of nearly three. The mesh is bigger than the rest of the file's for
+  exactly this reason — on the 8×6×4 brick the whole field is within a couple
+  of percent and nothing clears the noise.
+- **The pin array must not be floored.** `Partition_METIS.cc`'s `marshal`
+  raises everything below 1, which is right for weights a partitioner divides
+  by and silently wrong for pins: vertex 0 is an ordinary vertex, and
+  clamping it moves every net that touches it onto vertex 1. Written that
+  way, then caught by re-measuring rather than by any test — the partitions
+  stayed *valid*, so the audit, the cross-rank check and the balance
+  contracts were all still green; only the quality moved, `kahypar-det` from
+  1676 to 1612. A wrong hypergraph gives a worse answer, not a wrong one.
+- `Options::ewgt` weighs faces and has no meaning for a hypergraph whose nets
+  are points, so `build_zone_hypergraph` ignores it and every net weighs 1.
+  That is not a simplification: it is precisely what makes km1 *equal* the
+  element count on the wire rather than proportional to it. `--edge-weight`'s
+  help text says so.
+
+`KaHyParSupport.cmake` is the one `pkgs/` module that does not use
+`SimplePkg`: upstream ships a config package, and `libmtkahypar` links oneTBB
+transitively, which a bare header-and-library probe would not carry. Its
+imported target has no `INTERFACE_INCLUDE_DIRECTORIES`, so the header
+directory is found separately off `MtKaHyPar_DIR` and a prefix with the
+library but not the header counts as absent. A tree without it is configured
+with `-DCMAKE_DISABLE_FIND_PACKAGE_MtKaHyPar=ON`, which — unlike METIS's
+`SimplePkg` cache — needs no throwaway tree, though one was used anyway.
+
+Next: phase 5. The experiment now has every method it was designed to
+compare, and what is left is a threaded loopback transport plus an in-CI
+N-rank numerical test, `doc/partitioning.md`, rank reordering onto machine
+topology, and Kernighan–Lin refinement on `bfs`.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with
@@ -1350,7 +1411,7 @@ with no external libraries.
 | # | Commit | Contents |
 |---|---|---|
 | — | `Add optional METIS support` | `cmake/pkgs/METISSupport.cmake`, `Partition_METIS.cc`, registry entries for `metis-kway-cut`/`metis-kway-vol`/`metis-rb` |
-| — | `Add optional Mt-KaHyPar support` | `cmake/pkgs/KaHyParSupport.cmake`, `Partition_KaHyPar.cc`, hypergraph construction in `Partition_Graph.cc`, `kahypar`/`kahypar-quality` |
+| — | `Add optional Mt-KaHyPar support` | `cmake/pkgs/KaHyParSupport.cmake`, `Partition_KaHyPar.cc`, hypergraph construction in `Partition_Graph.cc`, `kahypar`/`kahypar-quality`/`kahypar-det` |
 
 METIS first — it exercises the `Zone_Graph` path and the availability-gating
 machinery, so the Mt-KaHyPar commit only has to add the hypergraph. Verify all four

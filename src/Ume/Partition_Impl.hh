@@ -67,6 +67,9 @@ std::unique_ptr<Partitioner> make_bfs(Method const &m);
 //! `metis-kway-cut`, `metis-kway-vol`, `metis-rb`; nothing without METIS
 std::unique_ptr<Partitioner> make_metis(Method const &m);
 
+//! `kahypar`, `kahypar-quality`, `kahypar-det`; nothing without Mt-KaHyPar
+std::unique_ptr<Partitioner> make_kahypar(Method const &m);
+
 ///@}
 
 } // namespace Part

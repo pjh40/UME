@@ -50,9 +50,13 @@ Options:
   --method NAME        Partitioning method [slab]
   --list-methods       Print the methods this build knows about, and exit
   --vertex-weight W    unit | corners | sides [corners]
-  --edge-weight W      unit | face-points | face-area [face-points]
+  --edge-weight W      unit | face-points | face-area [face-points].  Weighs
+                       faces, so the kahypar* methods, which weigh points, do
+                       not read it
   --imbalance F        Allowed heaviest-part to average-part ratio [1.03]
-  --seed N             Seed for methods that make random choices
+  --seed N             Seed for methods that make random choices.  kahypar and
+                       kahypar-quality refine in parallel and are not
+                       reproducible whatever it is; kahypar-det is
   --ghosts D           none | face | point [face]
   --owner R            low | balanced | hash [low]
   --zone-map FILE      Read a zone->part map instead of running a method

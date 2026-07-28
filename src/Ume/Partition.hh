@@ -73,6 +73,10 @@ struct Options {
   //! Number of parts to produce; parts are numbered `[0, nparts)`
   int nparts{1};
   //! Seed for any method that makes random choices
+  /*! Fixing it makes a method reproducible, with one advertised exception:
+      Mt-KaHyPar's `kahypar` and `kahypar-quality` refine in parallel and
+      race, so the same seed on the same mesh gives a different partition run
+      to run.  `kahypar-det` is the preset that does keep this promise. */
   std::uint64_t seed{0x9E3779B97F4A7C15ULL};
   Vertex_Weight vwgt{Vertex_Weight::CORNERS};
   Edge_Weight ewgt{Edge_Weight::FACE_POINTS};

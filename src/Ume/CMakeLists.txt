@@ -59,7 +59,7 @@ add_library(Ume
   Datastore.cc
   Decompose.cc
   Global_Ids.cc
-  # Partition_Impl.hh is private glue between these four, and so is not in
+  # Partition_Impl.hh is private glue between these five, and so is not in
   # UME_INCLUDE_FILES above: it is not installed and nothing outside the
   # library may include it.
   Partition_Impl.hh
@@ -67,6 +67,7 @@ add_library(Ume
   Partition_BFS.cc
   Partition_Geometric.cc
   Partition_Graph.cc
+  Partition_KaHyPar.cc
   Partition_METIS.cc
   Partition_Metrics.cc
   SOA_Entity.cc
@@ -125,6 +126,7 @@ target_include_directories(Ume
   $<INSTALL_INTERFACE:include/Ume>
   ${LIBUNWIND_INCLUDE_DIRS}
   ${METIS_INCLUDE_DIRS}
+  ${KAHYPAR_INCLUDE_DIRS}
   )
 
 target_link_libraries(Ume

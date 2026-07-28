@@ -869,6 +869,23 @@ else()
   message(STATUS "Tests: no METIS, so the metis-* methods are not tested")
 endif()
 
+if(NOT KAHYPAR_NOT_FOUND)
+  message(STATUS
+    "Tests: Mt-KaHyPar is available, so the kahypar* methods are tested")
+  # `kahypar-det` rather than `kahypar`, because this one writes its
+  # partition out and the audit fixtures below read it back: a preset that
+  # gives a different answer every run would make a failure here
+  # unreproducible, which is exactly what a driver-level test cannot afford.
+  add_test(NAME partition_kahypar
+    COMMAND ume_partition --ranks 4 --method kahypar-det --check --metrics
+            --no-write brick.ume
+    WORKING_DIRECTORY ${PARTITION_WORKDIR})
+  set_tests_properties(partition_kahypar PROPERTIES FIXTURES_REQUIRED brick)
+else()
+  message(STATUS
+    "Tests: no Mt-KaHyPar, so the kahypar* methods are not tested")
+endif()
+
 # The strongest end-to-end test available: an unrelated program reads all
 # three files back, audits each, and then checks them against each other.
 add_test(NAME partition_audit_all
