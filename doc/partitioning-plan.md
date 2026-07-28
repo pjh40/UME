@@ -461,13 +461,77 @@ Three notes:
   `Partition_Impl.hh` is in the library's source list but *not* in
   `UME_INCLUDE_FILES`, so it is not installed.
 
-Next: phase 4, `metis-kway-cut`/`metis-kway-vol`/`metis-rb` behind
-`METISSupport.cmake`. `Zone_Graph` is already in the shape `METIS_PartGraphKway`
-wants, so that commit is the CMake module, the `idx_t` marshalling, and the
-registry entries. **METIS is not installed on this machine** — no `metis.h`,
-no `libmetis`, nothing in the spack `ume` environment — so that commit needs
-`brew install metis` (or a spack build) first, or its marshalling lands
-unverified.
+**Phase 4, METIS complete.** `cmake/pkgs/METISSupport.cmake`,
+`Partition_METIS.cc`, three table entries, four Catch2 tests and one gated
+CTest. METIS 5.1.0 is in the spack `ume` environment (`metis@5.1.0`,
+`IDXTYPEWIDTH 32`), so all three trees find it and are green at 135/135, and
+139/139 with MPI. The build that does *not* have it was verified too — see
+below — at 134/134, with the four METIS tests reported by ctest as `Skipped`.
+
+Five notes:
+
+- **Each method calls the entry point it is named after, at every part
+  count**, which is a departure from what this plan says above. Karypis's
+  guidance to use `METIS_PartGraphRecursive` below eight parts is real, but
+  `METIS_OPTION_OBJTYPE` is a *k-way* option and `METIS_PartGraphRecursive`
+  minimizes the edge cut whatever it is set to — so switching automatically
+  would make `metis-kway-vol` silently stop minimizing the thing it exists to
+  minimize, on exactly the small part counts a comparison sweep starts at.
+  `metis-rb` is how you ask for the recursive one.
+- **"Every part is within one zone's weight of the mean" stopped being a
+  universal contract**, and the balance test had to learn the difference. It
+  is a *theorem* about splitting a sorted order at cumulative-weight
+  boundaries, which is what every built-in method does; METIS balances to a
+  ratio and reaches it heuristically. `metis-rb` misses the strict bound on
+  the mixed brick — 11 zones against a mean of 9.75 at four parts, 6 against
+  4.875 at eight — while both k-way methods happen to stay inside it.
+  `balance_bounds()` in `test_partition.cc` now states each family's own
+  promise, with the granularity term counted once per bisection level.
+- **METIS declines both degenerate part counts** — one part, and more parts
+  than vertices — so `assign` answers them before the call, the same way
+  `split_sorted` and `bfs` do. Vertex and edge weights are floored at 1 on the
+  way over: METIS divides by each constraint's total, and `FACE_AREA` can
+  round a sliver face to zero.
+- **The volume objective does not predict UME's traffic better than the edge
+  cut does.** Summed over 2, 3, 4, 8 and 16 parts of an 8×6×4 brick,
+  `metis-kway-cut` beats `metis-kway-vol` on `point_lambda1` as well as on cut
+  faces — 621 against 650 pure hex, 708 against 811 mixed. `METIS_OBJTYPE_VOL`
+  is a vertex-based surrogate; the gap between it and Σ(λ−1) is exactly the
+  gap Mt-KaHyPar's connectivity objective is supposed to close, so the
+  headline experiment now has a measured baseline to beat rather than an
+  assumed one.
+- **Where METIS wins is where the weights and the shape disagree.** On a pure
+  hex brick it reproduces the grid *exactly* at 2, 4, 8 and 16 parts (24, 56,
+  104, 152 cut faces, `block`'s own numbers) — which is the sharpest available
+  check that the marshalling is right, since a graph off by one row start does
+  not land on the optimum — and beats every geometric method at three, where
+  the grid has to give the whole factor to one axis: 52 against `rib`'s 54 and
+  `block`'s 62. Mix half the cells into tets and, summed over the same part
+  counts, `metis-kway-cut` cuts 567 faces against the best dependency-free
+  method's 601. Pointwise it is *not* uniformly better: it loses at two parts
+  (41 against `morton`'s 32) and at four (88 against `hilbert`'s 80). A sweep
+  shows the difference and a single part count would have said the opposite.
+
+`idx_t` is 32 bits wide in this build, so the marshalling is correct here but
+its 64-bit half is unexercised; it is written to be right at either width and
+the `static_assert` documents rather than gates. The `NO_METIS` define reaches
+only the library, through `COMMON_COMPILE_DEFINITIONS`, so the tests gate at
+*runtime* on `Method::available` rather than on a macro — which is what makes
+one test binary cover both configurations.
+
+A tree without METIS is configured as a throwaway, since `SimplePkg` caches
+its result in `CHECK_METIS_DONE` and will not re-probe:
+
+```
+cmake -S . -B /tmp/build-nometis -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16 \
+  -DCHECK_METIS_DONE=TRUE -DMETIS_NOT_FOUND=TRUE
+```
+
+Next: `kahypar`/`kahypar-quality` behind `KaHyParSupport.cmake`, which needs
+`build_zone_hypergraph` in `Partition_Graph.cc` — the availability gating,
+the method-table entries and the test-side runtime gate are all now in place
+and generic, so that commit is the hypergraph and the C API call.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with

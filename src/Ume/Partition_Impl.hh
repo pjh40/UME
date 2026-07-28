@@ -64,6 +64,9 @@ std::unique_ptr<Partitioner> make_geometric(Method const &m);
 //! `bfs`
 std::unique_ptr<Partitioner> make_bfs(Method const &m);
 
+//! `metis-kway-cut`, `metis-kway-vol`, `metis-rb`; nothing without METIS
+std::unique_ptr<Partitioner> make_metis(Method const &m);
+
 ///@}
 
 } // namespace Part

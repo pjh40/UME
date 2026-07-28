@@ -257,6 +257,14 @@ std::unique_ptr<Partitioner> make_ordered(Method const &m) {
   return nullptr;
 }
 
+//! Was this build configured with METIS?
+constexpr bool HAVE_METIS =
+#ifdef NO_METIS
+    false;
+#else
+    true;
+#endif
+
 /*! The methods this source knows about.  Entries whose `requires_pkg` is set
     are compiled in or out with the package they need, but stay in the table
     either way so that an unavailable method reads differently from a
@@ -268,6 +276,12 @@ constexpr Method TABLE[] = {
     {"hilbert", "equal runs of a Hilbert curve through the zones", nullptr,
         true},
     {"linear", "contiguous ranges of the input zone numbering", nullptr, true},
+    {"metis-kway-cut", "METIS k-way, minimizing the weight of the cut faces",
+        "METIS", HAVE_METIS},
+    {"metis-kway-vol", "METIS k-way, minimizing its communication-volume proxy",
+        "METIS", HAVE_METIS},
+    {"metis-rb", "METIS recursive bisection of the dual graph", "METIS",
+        HAVE_METIS},
     {"morton", "equal runs of a Morton (Z-order) curve through the zones",
         nullptr, true},
     {"pencil", "columns spanning the shortest extent of the mesh", nullptr,
@@ -317,6 +331,8 @@ std::unique_ptr<Partitioner> make(std::string_view name) {
   if (auto p = make_geometric(*m))
     return p;
   if (auto p = make_bfs(*m))
+    return p;
+  if (auto p = make_metis(*m))
     return p;
   return nullptr;
 }

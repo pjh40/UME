@@ -34,6 +34,7 @@ include(pkgs/KokkosSupport)
 include(pkgs/MPISupport)
 include(pkgs/OpenACCSupport)
 include(pkgs/libunwindSupport)
+include(pkgs/METISSupport)
 
 add_subdirectory(src)
 

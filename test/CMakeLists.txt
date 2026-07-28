@@ -849,6 +849,26 @@ set_tests_properties(partition_metrics_table PROPERTIES
   FIXTURES_REQUIRED metrics_table
   PASS_REGULAR_EXPRESSION "^method,[^\n]*\nslab-y,4,[^\n]*\nlinear,2,")
 
+#############################################################################
+# Optional partitioning libraries
+#############################################################################
+# See the note at the top of this file: a test that cannot run here is not
+# registered, and the guard says so either way.  The Catch2 sweep picks the
+# library methods up from `Part::methods()` on its own; what this adds is the
+# driver's own path to one of them, which is the part that can be broken by a
+# missing link line rather than by a missing implementation.
+
+if(NOT METIS_NOT_FOUND)
+  message(STATUS "Tests: METIS is available, so the metis-* methods are tested")
+  add_test(NAME partition_metis
+    COMMAND ume_partition --ranks 4 --method metis-kway-cut --check --metrics
+            --no-write brick.ume
+    WORKING_DIRECTORY ${PARTITION_WORKDIR})
+  set_tests_properties(partition_metis PROPERTIES FIXTURES_REQUIRED brick)
+else()
+  message(STATUS "Tests: no METIS, so the metis-* methods are not tested")
+endif()
+
 # The strongest end-to-end test available: an unrelated program reads all
 # three files back, audits each, and then checks them against each other.
 add_test(NAME partition_audit_all

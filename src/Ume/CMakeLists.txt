@@ -67,6 +67,7 @@ add_library(Ume
   Partition_BFS.cc
   Partition_Geometric.cc
   Partition_Graph.cc
+  Partition_METIS.cc
   Partition_Metrics.cc
   SOA_Entity.cc
   SOA_Idx_Corners.cc
@@ -123,6 +124,7 @@ target_include_directories(Ume
   $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
   $<INSTALL_INTERFACE:include/Ume>
   ${LIBUNWIND_INCLUDE_DIRS}
+  ${METIS_INCLUDE_DIRS}
   )
 
 target_link_libraries(Ume
