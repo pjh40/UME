@@ -768,12 +768,12 @@ Five notes:
   Mt-KaHyPar this is not an optional feature, and there is no build of UME that
   does without it.
 
-**A fourth build tree, `build-serial-mpi/` (`UME_SERIAL=ON`, `USE_MPI=ON`).**
+**A fourth build tree, `build-mpi-noomp/` (`UME_SERIAL=ON`, `USE_MPI=ON`).**
 The three trees above cover `(OFF,OFF)`, `(ON,OFF)` and `(OFF,ON)`, so nothing
 had ever run the Serial backend under more than one rank — and that is the
 combination most likely to be run in practice, one MPI rank per core with no
 threading underneath. It is now built and green at 152/152, with the same 152
-test *names* as `build-mpi/`.
+test *names* as `build-mpi-omp/`.
 
 What the cross-configuration comparison found, on a 6×5×4 brick at
 `--tet-fraction 0.4`:
@@ -782,13 +782,13 @@ What the cross-configuration comparison found, on a 6×5×4 brick at
   `.ume`/`.gid` partitions are byte-identical in all four trees.** The metrics
   sweep is every method `--list-methods` reports × {2,3,5,8} parts, compared as
   one CSV. `kahypar` and `kahypar-quality` are the only rows that move, and
-  they move *within* one tree — 137, 137, 145, 137 on four consecutive runs of
-  `build/` — while `kahypar-det` gives 137 in all four. So that difference is
-  the preset racing, exactly as the phase 4 note says, and not the
-  configuration.
+  they move *within* one tree — 137, 137, 145, 137 on four consecutive runs
+  of `build-nompi-omp/` — while `kahypar-det` gives 137 in all four. So that
+  difference is the preset racing, exactly as the phase 4 note says, and not
+  the configuration.
 - **Gradients are the one thing that does differ between configurations, and
   they differ by one ulp.** The 1-rank reference is bit-identical on 166 of 180
-  zones between `build-mpi/` and `build-serial-mpi/`, and the worst
+  zones between `build-mpi-omp/` and `build-mpi-noomp/`, and the worst
   disagreement is 3.7e-12 against gradients of order 2.0e4 — relative 1.8e-16.
   That is `gradzatz` accumulating its point sums with `Kokkos::atomic_add`
   under OpenMP against plain `+=` under Serial; it is not a decomposition
@@ -799,7 +799,7 @@ What the cross-configuration comparison found, on a 6×5×4 brick at
   tree exists to make: swapping the execution space does not change the answer
   a partitioned run computes.
 - **Under `UME_SERIAL=ON` the 3-rank run is bit-exact against its own serial
-  reference** — worst error 0 on all three ranks, where `build-mpi/` gets
+  reference** — worst error 0 on all three ranks, where `build-mpi-omp/` gets
   7.8e-12. Reordering the accumulation across a cut genuinely can change the
   last bit, so this is a property of this mesh's arithmetic and not a theorem;
   it is worth knowing when reading a failure, and worth *not* asserting.
@@ -809,18 +809,47 @@ Per-commit verification is now four trees, not three.
 Next: the rest of phase 5 — `doc/partitioning.md`, rank reordering onto machine
 topology, and Kernighan–Lin refinement on `bfs`.
 
-Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
-`build-mpi/` (`USE_MPI=ON`, created in commit 1), and `build-serial-mpi/`
-(`UME_SERIAL=ON` *and* `USE_MPI=ON`). All four are `Debug` and are configured
-with `-DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16` against the spack `ume`
-environment:
+### Build trees on this machine
+
+`build-{mpi,nompi}-{omp,noomp}/`: one tree per combination of the two options
+that change what the code *does* rather than what it links against. The first
+term is `USE_MPI`. The second is the execution space — `noomp` is
+`UME_SERIAL=ON`, which forces `Kokkos::Serial`, and `omp` is `UME_SERIAL=OFF`,
+which takes `Kokkos::DefaultExecutionSpace`. That default is OpenMP *because
+this machine's Kokkos is built `OPENMP;SERIAL`*; the name describes what the
+tree does here, not what `UME_SERIAL=OFF` means in general — on a Kokkos with a
+GPU backend enabled the same option would give CUDA or HIP and the tree would
+want a different name.
+
+| tree | `USE_MPI` | `UME_SERIAL` | tests |
+|---|---|---|---|
+| `build-nompi-omp/` | OFF | OFF | 148 |
+| `build-nompi-noomp/` | OFF | ON | 148 |
+| `build-mpi-omp/` | ON | OFF | 152 |
+| `build-mpi-noomp/` | ON | ON | 152 |
+
+All four are `Debug`, built with g++-16 against the spack `ume` environment.
+They were configured fresh rather than renamed from `build/`, `build-serial/`,
+`build-mpi/` and `build-serial-mpi/`: a CMake cache records its own absolute
+path, so moving a tree breaks it — and a from-scratch configure of each
+combination is worth having anyway, since it is the case the phase 2 CMake
+defect only appeared in. Status entries above that say "all three trees" mean
+the three that existed when they were written.
 
 ```sh
-cmake -S . -B build-serial-mpi -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16 \
-  -DCMAKE_PREFIX_PATH="$(spack location -e ume)/.spack-env/view" \
-  -DUME_SERIAL=ON -DUSE_MPI=ON
+V="$(spack location -e ume)/.spack-env/view"
+for mpi in ON OFF; do for ser in ON OFF; do
+  [ $mpi = ON ] && m=mpi || m=nompi
+  [ $ser = ON ] && s=noomp || s=omp
+  cmake -S . -B build-$m-$s -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16 \
+    -DCMAKE_PREFIX_PATH="$V" -DUME_SERIAL=$ser -DUSE_MPI=$mpi
+done; done
 ```
+
+Phase 4's four library combinations are a different axis and stay throwaway
+trees — `SimplePkg` caches its probe in `CHECK_<PKG>_DONE` and will not
+re-probe, so they cannot be reconfigured in place.
 
 ---
 
@@ -1362,17 +1391,18 @@ suite green.
 
 ### Build trees
 
-Two trees exist, `build/` (`UME_SERIAL=OFF`) and `build-serial/` (`UME_SERIAL=ON`),
-both `Debug` and — importantly — **both `USE_MPI=OFF`**. So neither currently
+Two trees exist, `build-nompi-omp/` (`UME_SERIAL=OFF`) and
+`build-nompi-noomp/` (`UME_SERIAL=ON`), both `Debug` and — importantly —
+**both `USE_MPI=OFF`**. So neither currently
 exercises `MPISupport.cmake` at all, and the R0 fix would land unverified.
 
-Add a third tree, `build-mpi/` (`USE_MPI=ON`), as the first step of commit 1. It is
-needed three times over: to show R0 actually matters (configure must succeed and
-`ume_mpi` must link Kokkos *and* MPI), to build `ume_mpi` for the phase-2 numerical
-test, and to catch `#ifdef HAVE_MPI` bit-rot in `Comm_MPI.cc`, which nothing
-compiles today.
+Add a third tree, `build-mpi-omp/` (`USE_MPI=ON`), as the first step of
+commit 1. It is needed three times over: to show R0 actually matters
+(configure must succeed and `ume_mpi` must link Kokkos *and* MPI), to build
+`ume_mpi` for the phase-2 numerical test, and to catch `#ifdef HAVE_MPI`
+bit-rot in `Comm_MPI.cc`, which nothing compiles today.
 
-A fourth tree, `build-serial-mpi/` (`UME_SERIAL=ON` *and* `USE_MPI=ON`), was
+A fourth tree, `build-mpi-noomp/` (`UME_SERIAL=ON` *and* `USE_MPI=ON`), was
 added in phase 5. The three above between them cover each option but never both
 at once, so nothing ran the Serial backend under more than one rank — which is
 the combination most likely to be run in practice, one rank per core with no
@@ -1381,10 +1411,11 @@ intra-rank execution space, the other the Transport), and the tree confirms it
 rather than assuming it; see the phase 5 status entry for what the
 cross-configuration comparison measured.
 
-Per-commit verification runs `ninja && ctest` in `build/` and `build-serial/`
-throughout; `build-mpi/` from commit 1 onward, and `build-serial-mpi/` from
-phase 5 onward. Phase 4 additionally needs the four library combinations —
-configure each as a throwaway tree rather than reconfiguring in place, since
+Per-commit verification runs `ninja && ctest` in `build-nompi-omp/` and
+`build-nompi-noomp/` throughout; `build-mpi-omp/` from commit 1 onward, and
+`build-mpi-noomp/` from phase 5 onward. Phase 4 additionally needs the four
+library combinations — configure each as a throwaway tree rather than
+reconfiguring in place, since
 `SimplePkg` caches its result in `CHECK_<PKG>_DONE` and will not re-probe.
 
 These four trees are what *this* development environment can cover, not what a
