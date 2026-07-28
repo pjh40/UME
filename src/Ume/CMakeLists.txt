@@ -3,6 +3,12 @@
 #############################################################################
 # The basic Ume library
 #############################################################################
+# Comm_Loopback gives every rank of a decomposition its own stack, because
+# Transport::exchange is called from the middle of a kernel and cannot be
+# deferred.  That is the only thing here that needs threads, and it needs them
+# unconditionally: it is not an optional feature.
+find_package(Threads REQUIRED)
+
 #set(CMAKE_CXX_CLANG_TIDY
 #  clang-tidy;
 #  -header-filter=.;
@@ -11,6 +17,7 @@
 set(UME_INCLUDE_FILES
   Brick_Mesh.hh
   Comm_Buffers.hh
+  Comm_Loopback.hh
   Comm_MPI.hh
   Comm_Neighbors.hh
   Comm_Transport.hh
@@ -53,6 +60,7 @@ add_library(Ume
   ${UME_INCLUDE_FILES}
   Brick_Mesh.cc
   Comm_Buffers.cc
+  Comm_Loopback.cc
   Comm_MPI.cc
   Comm_Neighbors.cc
   Comm_Transport.cc
@@ -134,6 +142,7 @@ target_link_libraries(Ume
   ${COMMON_LINK_LIBRARIES}
   PUBLIC
     Kokkos::kokkos
+    Threads::Threads
     )
 
 option(UME_HUGEPAGES "Link with the Huge pages library")

@@ -56,6 +56,7 @@ catch_discover_tests(ume_tests PROPERTIES TIMEOUT 120)
 add_executable(ume_gpu_tests
   test_atomic_add.cc
   test_brick.cc
+  test_loopback.cc
   test_mesh.cc
   test_partition.cc
   test_scratch_arrays.cc
@@ -918,9 +919,14 @@ if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
   # Does a partitioned run still compute the same physics?
   #########################################################################
   # Everything above establishes that a partition is well formed.  A
-  # decomposition can be all of that and still be wrong, and this is the only
-  # test that would notice: it runs the gradient on 3 ranks and compares it,
-  # zone for zone, against the answer the same binary gets on one.
+  # decomposition can be all of that and still be wrong: this runs the gradient
+  # on 3 ranks and compares it, zone for zone, against the answer the same
+  # binary gets on one.
+  #
+  # `test_loopback.cc` makes the same statement in every build, over every
+  # method, with a Comm::Loopback::Group in place of mpiexec.  What this adds is
+  # the parts the loopback cannot stand in for: a real MPI Transport, real
+  # per-rank files, and the .gid side-car that lines them up.
   #
   # A one-rank partition is bit-identical to its input, so the reference needs
   # no second code path and no serial driver -- but it does need a --ranks 1

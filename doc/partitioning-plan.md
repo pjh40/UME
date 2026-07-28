@@ -715,9 +715,56 @@ library but not the header counts as absent. A tree without it is configured
 with `-DCMAKE_DISABLE_FIND_PACKAGE_MtKaHyPar=ON`, which — unlike METIS's
 `SimplePkg` cache — needs no throwaway tree, though one was used anyway.
 
-Next: phase 5. The experiment now has every method it was designed to
-compare, and what is left is a threaded loopback transport plus an in-CI
-N-rank numerical test, `doc/partitioning.md`, rank reordering onto machine
+**Phase 5, the loopback transport complete.** `Comm_Loopback.hh/.cc` —
+`Loopback` and `Loopback::Group` — plus `test/test_loopback.cc`: seven Catch2
+tests, among them the in-CI N-rank numerical test. All three trees green at
+148/148, and 152/152 with MPI.
+
+Five notes:
+
+- **Only one rank runs at a time, and that is a requirement rather than a
+  shortcut.** Kokkos parallel dispatch is not thread-safe, the default
+  execution space here is OpenMP, and `gradzatz` dispatches on *either side* of
+  the `gathscat` in the middle of it — so N threads running N ranks would race
+  inside Kokkos, not inside anything this commit wrote. `Group` is therefore a
+  cooperative scheduler: exactly one rank holds a token, `exchange` is where it
+  changes hands, and the rank that completes the set performs every copy
+  because it is the only one that knows the set is complete and can reach every
+  other rank's buffers. Threads are still unavoidable — `exchange` is called
+  from the middle of a kernel and a rank cannot come back for the answer later
+  — but they are for *stacks*, not for parallelism. That is all a correctness
+  harness needs, and performance remains `ume_mpi`'s question.
+- **The sweep was checked to fail.** Deleting the one `std::copy_n` in
+  `deliver` leaves every partition still *well formed* — the audit, the
+  cross-rank check and the balance contracts all stay green — and puts the
+  gradient 4.6e4 out against an allowed 3.6e-8. So `loopback: a partitioned
+  gradient is the serial gradient` is load-bearing, and it is the second test
+  in the suite that could catch a decomposition that is well formed and still
+  wrong. It runs every method `Part::methods()` reports at N ∈ {1,2,3,5}, which
+  makes it a fuzz test for the two racing kahypar presets exactly as the phase 4
+  note predicted.
+- **An exact comparison is wrong even at one rank**, where the partition *is*
+  the input mesh. `gradzatz` accumulates its point sums with
+  `Kokkos::atomic_add` in every backend but Serial, so the order is not fixed
+  and the *reference* is only reproducible to roundoff. `CHECK(worst == 0.0)`
+  at `nparts == 1` was written, measured, and removed with the reason in its
+  place.
+- **A rank that leaves an exchange is reported rather than allowed to hang.**
+  `exchange` is collective exactly as it is under MPI, and the failure mode a
+  rendezvous has is a participant that never arrives. When the last live rank
+  posts and someone has vanished, the round completes anyway with a complaint
+  and `run()` throws; `Loopback::abort` throws instead of `std::abort()` for the
+  same reason, and a body's own exception is rethrown ahead of any complaint,
+  because the complaint is the consequence. A test suite that hangs is worse
+  than one that fails.
+- **The two answers line up through `Entity_Layout::global_index`, with no
+  `.gid` side-car**, which is the one thing the in-process test can do that the
+  MPI one cannot: no files, no format, and the reference is the serial mesh in
+  memory. `find_package(Threads REQUIRED)` is unconditional — unlike METIS or
+  Mt-KaHyPar this is not an optional feature, and there is no build of UME that
+  does without it.
+
+Next: the rest of phase 5 — `doc/partitioning.md`, rank reordering onto machine
 topology, and Kernighan–Lin refinement on `bfs`.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
