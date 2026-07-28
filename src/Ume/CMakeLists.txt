@@ -59,7 +59,13 @@ add_library(Ume
   Datastore.cc
   Decompose.cc
   Global_Ids.cc
+  # Partition_Impl.hh is private glue between these four, and so is not in
+  # UME_INCLUDE_FILES above: it is not installed and nothing outside the
+  # library may include it.
+  Partition_Impl.hh
   Partition.cc
+  Partition_BFS.cc
+  Partition_Geometric.cc
   Partition_Graph.cc
   Partition_Metrics.cc
   SOA_Entity.cc

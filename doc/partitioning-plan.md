@@ -432,10 +432,42 @@ which walks the faces and shares no code with it. That they agree also says
 that no zone pair in any of the sweep's meshes shares two faces — the case the
 edge merge exists for, and the one that would make the two numbers differ.
 
+**Phase 4's prerequisite complete.** `Partition.cc` split three ways behind a
+private `Partition_Impl.hh`: `Partition_Geometric.cc` (the methods that read a
+centroid, plus `centroid_extent`/`dims_create`/`principal_axis`/`morton_index`/
+`hilbert_index`), `Partition_BFS.cc` (`bfs` and the carve machinery), and
+`Partition.cc` (the table, `make()`, the shared blocks, and `linear`/
+`roundrobin`/`random`). No behaviour change; all three trees green at the same
+130/130 and 134/134 with MPI.
+
+Three notes:
+
+- **`make()` is now a walk down a chain of factories, not a table of names.**
+  Each file exposes one `make_*(Method const &)` that recognizes its own names
+  and returns nullptr for the rest. That is the whole reason to split the file
+  — a `#ifndef NO_METIS` around a whole `Partition_METIS.cc` plus one line in
+  the chain is far easier to be sure of than one around a region of an
+  1100-line file — so adding a family is a new file, a declaration in
+  `Partition_Impl.hh`, and one line in `make()`.
+- The failure mode the chain introduces is a table entry no factory claims,
+  and it was already pinned: `the method table distinguishes unknown from
+  unavailable` requires every available entry to construct. Verified by
+  deleting the `make_bfs` line, which fails that test with `bfs` in the
+  message rather than anywhere subtler.
+- `roundrobin` and `random` stayed with `linear` in `Partition.cc` rather than
+  going to `Partition_Geometric.cc` where the architecture section puts them.
+  They read no coordinate at all — the file they belong with is the one holding
+  the other index-order method, and the three together are about 80 lines.
+  `Partition_Impl.hh` is in the library's source list but *not* in
+  `UME_INCLUDE_FILES`, so it is not installed.
+
 Next: phase 4, `metis-kway-cut`/`metis-kway-vol`/`metis-rb` behind
 `METISSupport.cmake`. `Zone_Graph` is already in the shape `METIS_PartGraphKway`
 wants, so that commit is the CMake module, the `idx_t` marshalling, and the
-registry entries.
+registry entries. **METIS is not installed on this machine** — no `metis.h`,
+no `libmetis`, nothing in the spack `ume` environment — so that commit needs
+`brew install metis` (or a spack build) first, or its marshalling lands
+unverified.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with
