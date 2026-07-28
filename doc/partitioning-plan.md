@@ -374,7 +374,68 @@ test it cost is the one that now pins the property the comment got backwards —
 `interior_faces` is the same for every method, because it is the mesh's
 denominator rather than the decomposition's numerator.
 
-Next: `bfs`.
+**Phase 3, commit 18 complete.** `Zone_Graph`/`build_zone_graph` in
+`Partition_Graph.hh/.cc` — the CSR dual graph, with all three `Edge_Weight`
+choices behind it — and the `bfs` method in `Partition.cc`, plus five Catch2
+tests. All three trees green at 130/130, and 134/134 with MPI.
+
+Five notes:
+
+- **The growth rule went through three shapes, and the two that failed failed
+  structurally rather than by a bad constant.** Growing every part at once
+  from farthest-point-sampled seeds — which is what this plan specifies — is
+  the worst of them: regions grown together race each other and meet along the
+  perpendicular bisector of their seeds, and for a box seeded at its two far
+  corners that is the diagonal plane, the most expensive cut it has. On an
+  8×6×4 brick at two parts it cut 59 faces against `block`'s 24. Carving one
+  region at a time fixed two parts; doing it by recursive bisection rather
+  than one part after another fixed the rest. `bfs` now ties `block`
+  *exactly* — cut faces and duplicated points both — at 2, 3 and 8 parts, and
+  is within a third of it at 4 and 16.
+- **The gain is `2 * pull - degree`, and the degree is counted inside the
+  current node only.** Ranking a candidate by how much edge weight ties it to
+  the region, without subtracting what it would newly expose, takes
+  well-connected vertices however much boundary comes with them; that alone
+  was 96 cut faces against 77 at three parts. Counting the degree over the
+  whole graph is the other half: an edge leaving the node was cut at a level
+  above and cannot be cut again, so charging for it makes a vertex on the
+  node's own rim look expensive when it is the cheapest thing there is.
+- **The balance contract caught the first version, and the fix is where each
+  split aims.** A part walled in by its neighbours simply stops growing and
+  ends light — 16 against a mean of 30 on the mixed brick at eight parts, well
+  outside the one-zone slop every other method keeps. Aiming each split at the
+  *cumulative* weight that should have been placed by the end of its low half,
+  rather than at a share of the node in front of it, puts every one of those
+  boundaries within one zone's weight above its ideal; a part's weight is the
+  difference of two of them, so it lands within one zone's weight of the mean.
+  Rounding accumulates into the last part rather than compounding down the
+  tree.
+- `--edge-weight` was parsed and advertised from commit 8 and did nothing:
+  `bfs` is the first method to use an edge weight at all. It earns the option
+  end to end — on a brick of 1×2×4 cells at four parts, `face-area` cuts 66
+  faces where `unit` and `face-points` both cut 70.
+- **A grown part is one piece in the common case and not by theorem.** Each
+  bisection carves a region out of the piece it was given, and the *remainder*
+  of that piece can fall in two, after which the next region down that branch
+  restarts. Measured over 2..32 parts of an 8×6×4 brick: every part is one
+  piece except at 13, 14, 22, 29 and 31, where one part is two. The test pins
+  both the property and its limit, because a method that quietly stopped being
+  contiguous would pass everything else here.
+
+`bfs` lives in `Partition.cc` alongside every other built-in method, not in the
+`Partition_BFS.cc` the architecture section names. The file is now around 1100
+lines and the case for splitting it is a private header to reach the classes
+from `make()`; that is a refactor of its own, not part of a method commit.
+
+`build_zone_graph`'s arc count is checked against `Metrics::interior_faces`,
+which walks the faces and shares no code with it. That they agree also says
+that no zone pair in any of the sweep's meshes shares two faces — the case the
+edge merge exists for, and the one that would make the two numbers differ.
+
+Next: phase 4, `metis-kway-cut`/`metis-kway-vol`/`metis-rb` behind
+`METISSupport.cmake`. `Zone_Graph` is already in the shape `METIS_PartGraphKway`
+wants, so that commit is the CMake module, the `idx_t` marshalling, and the
+registry entries.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
 `build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with
@@ -569,7 +630,7 @@ exact load balance on a non-uniform mesh.
 | `linear` | contiguous ranges of original zone index; the natural baseline for a `renumber_mesh`-ordered mesh |
 | `roundrobin` | `z % N`. Deliberate worst case: nearly every face cut, comm graph complete |
 | `random` | deterministic shuffle from `Options::seed` |
-| `bfs` | greedy growing on the dual graph from farthest-point-sampled seeds, weight-targeted round-robin expansion. Gives a *non-geometric, topology-respecting* partition with zero dependencies, and is the natural seed for a later Kernighan–Lin pass |
+| `bfs` | recursive bisection of the dual graph, each cut grown from a seed on the rim of the piece being split and taking whichever zone shortens the boundary most. Gives a *non-geometric, topology-respecting* partition with zero dependencies, and is the natural seed for a later Kernighan–Lin pass. (This started as "grow every part at once from farthest-point-sampled seeds"; see commit 18 for why that does not work) |
 
 These cover everything Zoltan's RCB/RIB/HSFC/Block would give us, without
 Zoltan's `MPI_Init` requirement.

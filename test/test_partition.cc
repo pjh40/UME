@@ -64,6 +64,32 @@ Brick::Spec mixed_spec() {
   return spec;
 }
 
+//! The most pieces any one part of `z2r` falls into, in the dual graph
+int most_pieces(Part::Zone_Graph const &g, Part::Zone_Map const &z2r) {
+  auto const part = [&](int v) {
+    return z2r[static_cast<std::size_t>(g.v2z[static_cast<std::size_t>(v)])];
+  };
+  std::vector<char> seen(static_cast<std::size_t>(g.nverts), 0);
+  std::map<int, int> pieces;
+  for (int v = 0; v < g.nverts; ++v) {
+    if (seen[static_cast<std::size_t>(v)])
+      continue;
+    seen[static_cast<std::size_t>(v)] = 1;
+    pieces[part(v)] += 1;
+    std::vector<int> q{v};
+    for (std::size_t head = 0; head < q.size(); ++head)
+      for (int const u : g.neighbors(q[head]))
+        if (!seen[static_cast<std::size_t>(u)] && part(u) == part(v)) {
+          seen[static_cast<std::size_t>(u)] = 1;
+          q.push_back(u);
+        }
+  }
+  int worst = 0;
+  for (auto const &[p, n] : pieces)
+    worst = std::max(worst, n);
+  return worst;
+}
+
 //! The total weight each part was given
 std::vector<long> part_weights(Part::Zone_Map const &z2r,
     std::vector<int> const &wgt, int nparts) {
@@ -758,6 +784,270 @@ TEST_CASE("partition: the seed alone decides the shuffle", "[partition]") {
       }
     }
   CHECK(split_differently);
+}
+
+TEST_CASE("partition: the dual graph is the mesh's own adjacency",
+    "[partition]") {
+  /* Everything `bfs` knows about the mesh comes through here, and every
+     library method in phase 4 will be handed these four arrays directly, so
+     the shape is checked rather than assumed: a symmetric CSR over the real
+     zones only, with ascending rows and no self loops. */
+  for (Brick::Spec const &spec : {[] {
+         Brick::Spec s;
+         s.nx = 4;
+         s.ny = 3;
+         s.nz = 2;
+         return s;
+       }(),
+           [] {
+             Brick::Spec s;
+             s.nx = 3;
+             s.ny = 3;
+             s.nz = 2;
+             s.tet_fraction = 0.5;
+             return s;
+           }(),
+           [] {
+             Brick::Spec s;
+             s.nx = 3;
+             s.ny = 2;
+             s.nz = 2;
+             s.tet_fraction = 1.0;
+             s.boundary = Brick::Boundary_Style::PHANTOM_SIDES_ONLY;
+             return s;
+           }()}) {
+    INFO(spec.nx << 'x' << spec.ny << 'x' << spec.nz
+                 << " tets=" << spec.tet_fraction);
+    Mesh mesh;
+    brick(spec, mesh);
+    Part::Options opt;
+    Part::Zone_Graph const g = Part::build_zone_graph(mesh, opt);
+
+    std::vector<int> const v = Part::real_zones(mesh);
+    REQUIRE(g.nverts == static_cast<int>(v.size()));
+    REQUIRE(g.v2z == v);
+    for (int z = 0; z < mesh.zones.size(); ++z)
+      REQUIRE(g.z2v[static_cast<std::size_t>(z)] ==
+          (mesh.zones.mask[z] >= 1
+                  ? static_cast<int>(std::ranges::find(v, z) - v.begin())
+                  : -1));
+
+    REQUIRE(g.xadj.front() == 0);
+    REQUIRE(g.xadj.back() == static_cast<int>(g.adjncy.size()));
+    REQUIRE(g.adjwgt.size() == g.adjncy.size());
+    REQUIRE(std::ranges::is_sorted(g.xadj));
+
+    std::vector<int> const wgt = Part::zone_weights(mesh, opt);
+    for (int a = 0; a < g.nverts; ++a) {
+      INFO("vertex " << a);
+      REQUIRE(g.vwgt[static_cast<std::size_t>(a)] ==
+          wgt[static_cast<std::size_t>(g.v2z[static_cast<std::size_t>(a)])]);
+      std::span<int const> const nbr = g.neighbors(a);
+      std::span<int const> const w = g.weights(a);
+      REQUIRE(std::ranges::is_sorted(nbr));
+      REQUIRE(std::ranges::adjacent_find(nbr) == nbr.end());
+      for (std::size_t i = 0; i < nbr.size(); ++i) {
+        int const b = nbr[i];
+        REQUIRE(b != a);
+        REQUIRE(w[i] > 0);
+        /* An edge has to be there in both directions carrying the same
+           weight, or a partitioner would see two different meshes depending
+           on which end it looked from. */
+        std::span<int const> const back = g.neighbors(b);
+        auto const it = std::ranges::find(back, a);
+        REQUIRE(it != back.end());
+        REQUIRE(g.weights(b)[static_cast<std::size_t>(it - back.begin())] ==
+            w[i]);
+      }
+    }
+
+    /* The edges are the faces with a real zone on each side, which
+       `Partition_Metrics` counts by walking the faces rather than by building
+       a graph.  The two agreeing pins the graph against code that shares
+       nothing with it -- and says that no pair of zones in any of these
+       meshes shares two faces, which is what would make the two differ. */
+    Part::Metrics const m = Part::measure(mesh,
+        Part::build_decomposition(mesh,
+            Part::Zone_Map(static_cast<std::size_t>(mesh.zones.size()), 0),
+            1));
+    CHECK(static_cast<long>(g.adjncy.size()) == 2 * m.interior_faces);
+  }
+}
+
+TEST_CASE("partition: the dual graph weighs the edges it was asked to",
+    "[partition]") {
+  /* `--edge-weight` had nothing behind it until the dual graph landed.  The
+     cells are deliberately not cubes, so the three choices give three
+     different graphs rather than three spellings of the same one. */
+  Brick::Spec spec;
+  spec.nx = spec.ny = spec.nz = 3;
+  spec.dx = 1.0;
+  spec.dy = 2.0;
+  spec.dz = 4.0;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  /* A brick numbers its cells `x + nx * (y + ny * z)`, so the gap between two
+     neighbors names the axis the face between them is normal to. */
+  auto axis_of = [&spec](int gap) {
+    if (gap == 1)
+      return 0;
+    return gap == spec.nx ? 1 : 2;
+  };
+
+  Part::Options opt;
+  for (auto ewgt : {Part::Edge_Weight::UNIT, Part::Edge_Weight::FACE_POINTS,
+           Part::Edge_Weight::FACE_AREA}) {
+    INFO("ewgt=" << static_cast<int>(ewgt));
+    opt.ewgt = ewgt;
+    Part::Zone_Graph const g = Part::build_zone_graph(mesh, opt);
+
+    /* Areas are scaled with the largest face at `AREA_SCALE`, and here the
+       largest is the one normal to x: 2 by 4 against 1 by 4 and 1 by 2. */
+    std::array<int, 3> const want{1, 1, 1};
+    std::array<int, 3> const want_area{Part::AREA_SCALE, Part::AREA_SCALE / 2,
+        Part::AREA_SCALE / 4};
+
+    for (int a = 0; a < g.nverts; ++a) {
+      std::span<int const> const nbr = g.neighbors(a);
+      std::span<int const> const w = g.weights(a);
+      for (std::size_t i = 0; i < nbr.size(); ++i) {
+        int const axis = axis_of(std::abs(g.v2z[static_cast<std::size_t>(a)] -
+            g.v2z[static_cast<std::size_t>(nbr[i])]));
+        INFO("edge " << a << "-" << nbr[i] << " axis " << axis);
+        switch (ewgt) {
+        case Part::Edge_Weight::UNIT:
+          REQUIRE(w[i] == want[static_cast<std::size_t>(axis)]);
+          break;
+        case Part::Edge_Weight::FACE_POINTS:
+          REQUIRE(w[i] == 4); //!< every face of a hex brick is a quad
+          break;
+        case Part::Edge_Weight::FACE_AREA:
+          REQUIRE(w[i] == want_area[static_cast<std::size_t>(axis)]);
+          break;
+        }
+      }
+    }
+  }
+}
+
+TEST_CASE("partition: growing a part never looks at a coordinate",
+    "[partition]") {
+  /* This is what `bfs` is for.  Every other zero-dependency method sorts the
+     zones by something derived from `pcoord`, so a mesh whose shape misleads
+     -- one that doubles back on itself, or whose cells vary wildly in size --
+     misleads them; `bfs` sees only which zones share a face.  A brick has no
+     such shape to be misled by, so the property is shown directly instead:
+     move the points anywhere at all and the answer does not change. */
+  constexpr int NPARTS = 8;
+  Brick::Spec spec;
+  spec.nx = 8;
+  spec.ny = 6;
+  spec.nz = 4;
+  Mesh plain, moved;
+  brick(spec, plain);
+  brick(spec, moved);
+
+  /* Before anything derived is asked for -- the Datastore never invalidates.
+     Not a rotation: the axes are permuted and stretched too, so no ordering
+     by any coordinate survives. */
+  for (Vec3 &p : moved.ds->access_vec3v("pcoord")) {
+    Vec3 const q = p;
+    p[0] = 3.0 * q[2] + 0.5;
+    p[1] = -q[0];
+    p[2] = 2.0 * q[1];
+  }
+
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  Part::Zone_Map grown_a, grown_b, sliced_a, sliced_b;
+  Part::make("bfs")->assign(plain, opt, grown_a);
+  Part::make("bfs")->assign(moved, opt, grown_b);
+  Part::make("slab-x")->assign(plain, opt, sliced_a);
+  Part::make("slab-x")->assign(moved, opt, sliced_b);
+
+  CHECK(grown_a == grown_b);
+  CHECK(sliced_a != sliced_b); //!< which is what makes the first check mean it
+}
+
+TEST_CASE("partition: a grown part comes out in one piece", "[partition]") {
+  /* Nothing downstream requires a part to be connected, but a part in two
+     pieces has two surfaces to pay for, so this is the property the growth
+     rule is buying.  It is not a theorem: each bisection carves a region out
+     of the piece it is given, and the *remainder* of that piece can fall in
+     two, after which the next region down that branch has to restart.  Both
+     the property and its limit are pinned, because a method that quietly
+     stopped being contiguous would still pass every other test here. */
+  Brick::Spec spec;
+  spec.nx = 8;
+  spec.ny = 6;
+  spec.nz = 4;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  Part::Options opt;
+  Part::Zone_Graph const g = Part::build_zone_graph(mesh, opt);
+  for (int nparts = 2; nparts <= 32; ++nparts) {
+    INFO("nparts=" << nparts);
+    opt.nparts = nparts;
+    Part::Zone_Map z2r;
+    Part::make("bfs")->assign(mesh, opt, z2r);
+    CHECK(most_pieces(g, z2r) <= (nparts <= 12 ? 1 : 2));
+  }
+}
+
+TEST_CASE("partition: a grown cut competes with a geometric one",
+    "[partition]") {
+  /* A brick is the mesh the geometric methods were written for, so matching
+     `block` here is the most that can be asked of a method that never looks
+     at a coordinate -- and `bfs` does match it, exactly, at 2, 3 and 8 parts.
+     Where it falls behind it is by under a third, not by a factor: the greedy
+     grows a shell before it grows a slab, so a cut can settle on the wrong
+     one of a piece's two natural planes.  That gap is exactly what a
+     refinement pass over the grown boundary is for, and it is the reason this
+     bound is stated as a ratio rather than as the numbers of the day. */
+  Brick::Spec spec;
+  spec.nx = 8;
+  spec.ny = 6;
+  spec.nz = 4;
+  Mesh mesh;
+  brick(spec, mesh);
+
+  Part::Options opt;
+  auto measure = [&](char const *method, int nparts) {
+    opt.nparts = nparts;
+    Part::Zone_Map z2r;
+    Part::make(method)->assign(mesh, opt, z2r);
+    return Part::measure(
+        mesh, Part::build_decomposition(mesh, std::move(z2r), nparts));
+  };
+
+  for (int nparts : {2, 3, 4, 8, 16}) {
+    INFO("nparts=" << nparts);
+    Part::Metrics const grown = measure("bfs", nparts);
+    Part::Metrics const box = measure("block", nparts);
+
+    /* Better than every method that does not look at the mesh at all, which
+       is the floor a topology-respecting method has to clear. */
+    for (char const *blind : {"linear", "roundrobin", "random"}) {
+      INFO(blind);
+      CHECK(grown.cut_faces < measure(blind, nparts).cut_faces);
+    }
+
+    CHECK(grown.cut_faces * 3 <= box.cut_faces * 4);
+    CHECK(grown.max_neighbors <= box.max_neighbors);
+  }
+
+  /* Exactly the grid's own answer wherever the recursive halving lines up
+     with the mesh: two, three and eight parts of an 8x6x4 brick. */
+  for (int nparts : {2, 3, 8}) {
+    INFO("nparts=" << nparts);
+    Part::Metrics const grown = measure("bfs", nparts);
+    Part::Metrics const box = measure("block", nparts);
+    CHECK(grown.cut_faces == box.cut_faces);
+    CHECK(grown.kinds[Part::POINT].duplicated ==
+        box.kinds[Part::POINT].duplicated);
+  }
 }
 
 TEST_CASE("partition: nparts must be positive", "[partition]") {
