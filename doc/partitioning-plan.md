@@ -806,8 +806,37 @@ What the cross-configuration comparison found, on a 6×5×4 brick at
 
 Per-commit verification is now four trees, not three.
 
-Next: the rest of phase 5 — `doc/partitioning.md`, rank reordering onto machine
-topology, and Kernighan–Lin refinement on `bfs`.
+**Phase 5, `doc/partitioning.md` complete.** The user-facing document: the CLI
+and the C++ entry points, the two-mechanism parallel model, the file and index
+conventions, the method table, how to read the metrics, the five verification
+layers, and the two libraries with their licences. Documentation only — no code
+changed — and all four trees green at the same 148/148 and 152/152.
+
+Three notes:
+
+- **Every number and every listing in it was produced by running the thing, not
+  copied out of this plan.** The metrics block, the twenty-method sweep table,
+  the comm matrix and the `.gid` excerpt are the real output of an 8×6×4
+  `--tet-fraction 0.4` brick; the `--ranks 1` bit-identity claim is a `cmp`, and
+  the partial-set skip is `ume_serial --audit part.00001.ume` saying "1 of 4
+  ranks were given". Two claims did not survive that and were rewritten: the
+  built-in methods ignore `--imbalance` entirely (only `Partition_METIS.cc` and
+  `Partition_KaHyPar.cc` read it), and the sweep table's top four are separated
+  by 6% on one mesh at one part count, which is why the margin assertions in the
+  tests are made on a larger mesh summed over several part counts.
+- **"Optional-feature tests are not registered rather than skipped" is only half
+  true**, and the doc says which half. The CTests are conditionally registered
+  with a `message(STATUS)`; the Catch2 tests are one binary covering both
+  configurations, so they gate at runtime on `Method::available` and ctest
+  reports them `Skipped`.
+- `doc/brick_mesh.md` §9 said "no MPI decomposition … adding slab partitioning
+  is the obvious next step", which this work falsified. That paragraph now
+  points at `doc/partitioning.md`. The README was left alone: it does not index
+  the `doc/` tree and does not mention `gen_brick` either, so bringing it up to
+  date is its own commit.
+
+Next: the rest of phase 5 — rank reordering onto machine topology, and
+Kernighan–Lin refinement on `bfs`.
 
 ### Build trees on this machine
 

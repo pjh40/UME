@@ -409,10 +409,10 @@ library itself fails to compile in `mem_exec_spaces.hh`.
 
 No MPI decomposition.  Every entity is emitted as `INTERNAL` with no ghosts,
 neighbor lists are empty, and `Spec` has no partitioning fields, so a generated
-mesh is a single-rank mesh.  Adding slab partitioning — ghost layers,
-`cpy_idx`/`src_pe`/`src_idx`, and the `myCpys`/`mySrcs` neighbor lists — is the
-obvious next step, and would make the generator usable for the parallel
-gather/scatter paths as well.
+mesh is a single-rank mesh.  Splitting one across ranks is a separate step:
+`ume_partition` takes any serial `.ume` and writes the per-rank files, with the
+ghost layers, `cpy_idx`/`src_pe`/`src_idx` and `myCpys`/`mySrcs` neighbor lists
+the parallel gather/scatter paths need.  See `doc/partitioning.md`.
 
 Faces are planar and cells are rectangular, so the generator cannot produce
 warped or badly conditioned zones.  Non-uniform `dx/dy/dz` is supported, but
