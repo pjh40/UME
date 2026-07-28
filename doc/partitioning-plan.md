@@ -724,9 +724,13 @@ Five notes:
 
 - **Only one rank runs at a time, and that is a requirement rather than a
   shortcut.** Kokkos parallel dispatch is not thread-safe, the default
-  execution space here is OpenMP, and `gradzatz` dispatches on *either side* of
-  the `gathscat` in the middle of it — so N threads running N ranks would race
-  inside Kokkos, not inside anything this commit wrote. `Group` is therefore a
+  execution space is OpenMP in every tree that does not set `UME_SERIAL`, and
+  `gradzatz` dispatches on *either side* of the `gathscat` in the middle of it —
+  so N threads running N ranks would race inside Kokkos, not inside anything
+  this commit wrote. Under `UME_SERIAL=ON` the space is `Kokkos::Serial` and
+  the constraint is much weaker, but `Group` serializes unconditionally: a
+  harness that is only safe in some configurations is worse than one that is
+  slow in all of them. `Group` is therefore a
   cooperative scheduler: exactly one rank holds a token, `exchange` is where it
   changes hands, and the rank that completes the set performs every copy
   because it is the only one that knows the set is complete and can reach every
@@ -764,13 +768,59 @@ Five notes:
   Mt-KaHyPar this is not an optional feature, and there is no build of UME that
   does without it.
 
+**A fourth build tree, `build-serial-mpi/` (`UME_SERIAL=ON`, `USE_MPI=ON`).**
+The three trees above cover `(OFF,OFF)`, `(ON,OFF)` and `(OFF,ON)`, so nothing
+had ever run the Serial backend under more than one rank — and that is the
+combination most likely to be run in practice, one MPI rank per core with no
+threading underneath. It is now built and green at 152/152, with the same 152
+test *names* as `build-mpi/`.
+
+What the cross-configuration comparison found, on a 6×5×4 brick at
+`--tet-fraction 0.4`:
+
+- **`gen_brick`'s mesh, all 18 deterministic methods' metrics, and the written
+  `.ume`/`.gid` partitions are byte-identical in all four trees.** The metrics
+  sweep is every method `--list-methods` reports × {2,3,5,8} parts, compared as
+  one CSV. `kahypar` and `kahypar-quality` are the only rows that move, and
+  they move *within* one tree — 137, 137, 145, 137 on four consecutive runs of
+  `build/` — while `kahypar-det` gives 137 in all four. So that difference is
+  the preset racing, exactly as the phase 4 note says, and not the
+  configuration.
+- **Gradients are the one thing that does differ between configurations, and
+  they differ by one ulp.** The 1-rank reference is bit-identical on 166 of 180
+  zones between `build-mpi/` and `build-serial-mpi/`, and the worst
+  disagreement is 3.7e-12 against gradients of order 2.0e4 — relative 1.8e-16.
+  That is `gradzatz` accumulating its point sums with `Kokkos::atomic_add`
+  under OpenMP against plain `+=` under Serial; it is not a decomposition
+  effect, and it is why the tolerance in both numerical tests is relative and
+  nonzero.
+- **Each tree's 3-rank run reproduces the *other* tree's serial reference**,
+  worst error 7.3e-12 against 2.0e-8 allowed. That is the statement the fourth
+  tree exists to make: swapping the execution space does not change the answer
+  a partitioned run computes.
+- **Under `UME_SERIAL=ON` the 3-rank run is bit-exact against its own serial
+  reference** — worst error 0 on all three ranks, where `build-mpi/` gets
+  7.8e-12. Reordering the accumulation across a cut genuinely can change the
+  last bit, so this is a property of this mesh's arithmetic and not a theorem;
+  it is worth knowing when reading a failure, and worth *not* asserting.
+
+Per-commit verification is now four trees, not three.
+
 Next: the rest of phase 5 — `doc/partitioning.md`, rank reordering onto machine
 topology, and Kernighan–Lin refinement on `bfs`.
 
 Build trees: `build/` (`UME_SERIAL=OFF`), `build-serial/` (`UME_SERIAL=ON`),
-`build-mpi/` (`USE_MPI=ON`, created in commit 1). All three are configured with
-`-DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16` against the spack `ume`
-environment.
+`build-mpi/` (`USE_MPI=ON`, created in commit 1), and `build-serial-mpi/`
+(`UME_SERIAL=ON` *and* `USE_MPI=ON`). All four are `Debug` and are configured
+with `-DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16` against the spack `ume`
+environment:
+
+```sh
+cmake -S . -B build-serial-mpi -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16 \
+  -DCMAKE_PREFIX_PATH="$(spack location -e ume)/.spack-env/view" \
+  -DUME_SERIAL=ON -DUSE_MPI=ON
+```
 
 ---
 
@@ -1322,13 +1372,22 @@ needed three times over: to show R0 actually matters (configure must succeed and
 test, and to catch `#ifdef HAVE_MPI` bit-rot in `Comm_MPI.cc`, which nothing
 compiles today.
 
-Per-commit verification runs `ninja && ctest` in `build/` and `build-serial/`
-throughout; `build-mpi/` from commit 1 onward. Phase 4 additionally needs the four
-library combinations — configure each as a throwaway tree rather than reconfiguring
-in place, since `SimplePkg` caches its result in `CHECK_<PKG>_DONE` and will not
-re-probe.
+A fourth tree, `build-serial-mpi/` (`UME_SERIAL=ON` *and* `USE_MPI=ON`), was
+added in phase 5. The three above between them cover each option but never both
+at once, so nothing ran the Serial backend under more than one rank — which is
+the combination most likely to be run in practice, one rank per core with no
+threading underneath. `UME_SERIAL` and `USE_MPI` are orthogonal (one picks the
+intra-rank execution space, the other the Transport), and the tree confirms it
+rather than assuming it; see the phase 5 status entry for what the
+cross-configuration comparison measured.
 
-These three trees are what *this* development environment can cover, not what a
+Per-commit verification runs `ninja && ctest` in `build/` and `build-serial/`
+throughout; `build-mpi/` from commit 1 onward, and `build-serial-mpi/` from
+phase 5 onward. Phase 4 additionally needs the four library combinations —
+configure each as a throwaway tree rather than reconfiguring in place, since
+`SimplePkg` caches its result in `CHECK_<PKG>_DONE` and will not re-probe.
+
+These four trees are what *this* development environment can cover, not what a
 user is expected to have. Options are enabled where the hardware and the site
 support them, so a build with none of MPI, OpenACC or the partitioning libraries
 is an ordinary configuration and must be green on its own terms. Nothing in this

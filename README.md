@@ -59,7 +59,14 @@ flag. Package-specific CMake options for UME include:
 
 CMake options that are not package-specific include:
 * `UME_SERIAL=YES` will forcefully enable the use of the
-  `Kokkos::Serial` execution space.
+  `Kokkos::Serial` execution space. This is orthogonal to `USE_MPI`: it
+  chooses the execution space *within* a rank, not how ranks communicate,
+  so `UME_SERIAL=YES USE_MPI=YES` — one rank per core with no threading
+  underneath — is a supported and tested combination. The two
+  configurations give the same answers to within roundoff; they are not
+  bit-identical, because `gradzatz` accumulates its point sums with
+  `Kokkos::atomic_add` outside the `Kokkos::Serial` space and the order is
+  then not fixed.
 * `UME_HUGEPAGES=YES` will link with the [HugeTLB
   Pages](https://www.kernel.org/doc/html/latest/admin-guide/mm/hugetlbpage.html)
   library. If properly configured, this can dramatically speed up the
