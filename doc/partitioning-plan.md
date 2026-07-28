@@ -528,6 +528,132 @@ cmake -S . -B /tmp/build-nometis -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DCHECK_METIS_DONE=TRUE -DMETIS_NOT_FOUND=TRUE
 ```
 
+**Phase 4, Mt-KaHyPar's prerequisite complete: it is installable and it
+works here.** No code yet — `KaHyParSupport.cmake` and `Partition_KaHyPar.cc`
+are still to write — but the dependency is no longer hypothetical, and what
+was learned changes the commit.
+
+Mt-KaHyPar is **in neither Spack's builtin repo nor Homebrew** (Homebrew has
+`kahip`, which is a different partitioner). So it has to be built, and the
+question is by what. **Not a CMake fetcher**, though upstream supports one:
+*which options a tree is built with is a property of the machine, not of the
+project* — the principle the rest of this plan runs on — and a `FetchContent`
+would make "no KaHyPar" mean "the option was off" rather than "this machine
+does not have it", which is the case the four-combination discipline exists
+to test. It would also raise UME's CMake floor from 3.20 to upstream's 3.26
+whenever it was on, and download at configure time on build nodes that are
+frequently offline. `scripts/spack-repo/` therefore carries a `mt-kahypar`
+package; its README says why each line of the recipe is there, and it is a
+stopgap to be deleted if the package reaches Spack proper.
+
+### What the trial install found
+
+Verified at v1.6.2 by building it, installing it, and calling it from a UME
+process — not read off the README, which is stale in two places.
+
+- **oneTBB does not support GCC on macOS, so the stack is built with clang
+  there.** Three failures in a row, none of them Mt-KaHyPar's: oneTBB's
+  `GNU.cmake` reads a "GNU assembler version" out of `gcc -Wa,-v`, which
+  Apple's assembler does not print, and hands the banner text to `math()`;
+  it compiles `-Werror` while macOS deprecates `getcontext`, needing
+  `-DTBB_STRICT=OFF`; and finally its macOS export list `mac64-tbb.def` names
+  symbols as libc++ mangles them, so a libstdc++ build dies on an undefined
+  vtable for `tbb::detail::r1::unsafe_wait`. The first two have workarounds
+  and the third does not. **This is macOS-only** — gcc + oneTBB is the
+  supported combination on Linux, and nothing here affects a cluster build.
+- **A clang-built `libmtkahypar` linked from g++-16 works.** That is the
+  question the macOS answer raises, so it was tested rather than assumed: a
+  binary linking UME's library, Kokkos, METIS *and* `libmtkahypar` — libstdc++
+  and libc++ both loaded — builds, runs and gives right answers. The C API is
+  `extern "C"` over POD types, which is exactly the boundary that makes this
+  sound.
+- **`mt_kahypar_km1()` equals UME's `point_lambda1` exactly**, in every run —
+  165 on a hex 8×6×4 brick at eight parts, 171 to 174 on the half-tet one —
+  each figure computed twice, once by Mt-KaHyPar over the hypergraph and once
+  by `Part::measure` over the decomposition that hypergraph's answer produces,
+  sharing no code. That is this plan's central claim ("the λ−1 objective *is*
+  UME's point-gathscat volume rather than a proxy for it") measured rather
+  than argued, and it validates the `m:p>zs`-filtered-to-real-zones
+  hypergraph before `build_zone_hypergraph` exists to hold it.
+- **And it beats METIS on the metric that matters.** On the mixed 8×6×4 brick
+  at eight parts: `point_lambda1` of 171–174 for Mt-KaHyPar's DEFAULT preset
+  against 187 for `metis-kway-cut`, 189 for `block` and 206 for `bfs` — and it
+  wins cut faces too (141–142 against 147), which it was not even optimizing.
+  On the pure-hex brick everything ties at 165, exactly as METIS did, because
+  the grid is already optimal there. So the headline experiment has a result,
+  and the mesh that shows it is one whose zone weights and geometry disagree.
+- **The DEFAULT preset is not reproducible, and `--seed` will not make it
+  so.** The same binary on the same mesh gave 171, 172, 173 and 174 on four
+  consecutive runs, with the imbalance moving too. That is parallel
+  refinement racing rather than anything to do with the seed, and it is what
+  the DETERMINISTIC and DETERMINISTIC_QUALITY presets exist for. Three
+  consequences for the commit, none of them settled here:
+  - No test may pin a kahypar number, the way `test_partition.cc` pins one
+    for every method written in-tree. Bounds against another method's number
+    are still fair game — the margin over `metis-kway-cut` is far wider than
+    the spread.
+  - `cases()` sweeps `Part::methods()`, so the audit, the cross-rank check
+    and the metrics would run on a *different* partition each time. That is
+    a fuzz test and a good one — they must hold for any valid zone map — but
+    it is a change in kind from the rest of the suite, and a failure would
+    not reproduce on rerun. Worth saying out loud in the test file.
+  - `Options::seed` is documented as making a method reproducible. Either
+    `kahypar` maps to DETERMINISTIC so that stays true, or the two presets
+    become separate methods and the documentation grows an exception. The
+    second is probably right — determinism costs quality, and measuring what
+    it costs is the sort of thing this whole exercise is for.
+
+### Four corrections to what this plan says above
+
+- The header is **`mtkahypar.h`** (plus `mtkahypartypes.h`), not
+  `libmtkahypar.h`. And v1.6.2 has **no submodules**, whatever the README says
+  about cloning recursively.
+- `KaHyParSupport.cmake` should use **`find_package(MtKaHyPar CONFIG)`** and
+  the `MtKaHyPar::mtkahypar` imported target, not `SimplePkg`. Upstream ships
+  a config package, `MPISupport.cmake` already sets the precedent, and a bare
+  header/lib probe would not carry the transitive TBB link.
+- **`mt_kahypar_hypernode_id_t` is `unsigned long`** — 64 bits here against
+  UME's `int` — so the marshalling discipline `idx_t` got in the METIS commit
+  is mandatory rather than defensive.
+- **The C header exports unscoped ALL-CAPS enumerators**, among them `CUT`,
+  `KM1`, `DEFAULT`, `QUALITY`, `EPSILON` and `METIS`. It cost a compile error
+  in the trial. `Partition_KaHyPar.cc` must not include `metis.h` as well, and
+  should not name a local constant anything short.
+
+### Installing it here
+
+```sh
+spack repo add --scope=user scripts/spack-repo/spack_repo/ume
+spack install mt-kahypar
+```
+
+That has been run, not just written: it concretizes to `mt-kahypar@1.6.2
+%c,cxx=apple-clang@21.0.0` against `intel-tbb@2023.1.0` and installs, and the
+UME-side trial above links the *installed* library and gives the same answers
+as the hand-built one. Spack's rpath injection also settles the dangling-TBB
+problem that `KAHYPAR_DOWNLOAD_TBB` leaves behind: the installed
+`libmtkahypar` still names `@rpath/libtbb.12.dylib`, but the intel-tbb prefix
+is now first in its `LC_RPATH` list.
+
+One trap in the recipe worth not rediscovering: the darwin conflict has to be
+written `%[virtuals=cxx] gcc` and not a bare `%gcc`. Under Spack 1.x a bare
+`%gcc` matches gcc *anywhere in the DAG*, so a dependency's `gcc-runtime` node
+trips it and nothing concretizes at all — with a message that reads as though
+the compiler you asked for were the problem.
+
+Two things about this machine specifically. `spack compiler find` was needed
+first: only `gcc@16.1.0` was registered, so the recipe's darwin conflict left
+the concretizer nothing to choose and it failed with the conflict message
+rather than falling back. And the `ume` environment pins
+`all: require: ...c=gcc-16 ...cxx=gcc-16`, which mt-kahypar cannot satisfy on
+darwin — so adding it to that environment needs a per-package exception:
+
+```yaml
+packages:
+  mt-kahypar:
+    require: '%[when=%c]c=apple-clang %[when=%cxx]cxx=apple-clang'
+```
+
 Next: `kahypar`/`kahypar-quality` behind `KaHyParSupport.cmake`, which needs
 `build_zone_hypergraph` in `Partition_Graph.cc` — the availability gating,
 the method-table entries and the test-side runtime gate are all now in place
