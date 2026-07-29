@@ -61,7 +61,7 @@ std::vector<int> begin_assign(
 //! `slab`, `slab-x/y/z`, `block`, `pencil`, `rcb`, `rib`, `morton`, `hilbert`
 std::unique_ptr<Partitioner> make_geometric(Method const &m);
 
-//! `bfs`
+//! `bfs`, `bfs-kl`
 std::unique_ptr<Partitioner> make_bfs(Method const &m);
 
 //! `metis-kway-cut`, `metis-kway-vol`, `metis-rb`; nothing without METIS

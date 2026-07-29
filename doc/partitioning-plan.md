@@ -835,8 +835,63 @@ Three notes:
   the `doc/` tree and does not mention `gen_brick` either, so bringing it up to
   date is its own commit.
 
-Next: the rest of phase 5 — rank reordering onto machine topology, and
-Kernighan–Lin refinement on `bfs`.
+**Phase 5, Kernighan–Lin refinement complete.** `kl_sweep`/`refine_cut` in
+`Partition_BFS.cc`, the `bfs-kl` method, and one new Catch2 test with two more
+extended to cover it. All four trees green at 149/149 and 153/153.
+
+Five notes:
+
+- **A new method rather than a change to `bfs`, and the reason is that
+  refinement is not free in either direction.** It costs time, it spends
+  balance slack the growth left unspent (1.115 against 1.059 on the sample),
+  and on 11% of the individual measurements over 2..32 parts it makes the
+  answer *worse* — refining a cut hands the recursion a different pair of
+  halves, and a better cut at one level can leave a worse-shaped piece below
+  it. Keeping both is what makes the improvement a measured quantity instead
+  of an assertion, which is the whole point of this exercise; and every
+  existing `bfs` test stayed exactly as it was.
+- **The balance contract is what picks the algorithm.** A grown region stops
+  on the *first* vertex to reach its cumulative target, so the low half's
+  weight sits right against the bottom of the window it is allowed. An FM pass
+  moves one vertex at a time and would step out of that window on its first
+  move in one of the two directions, so it could only ever push the cut one
+  way. Swaps are weight-neutral whenever the two zones weigh the same. The
+  plan said "Kernighan–Lin" and Kernighan–Lin is genuinely what fits — not the
+  more usual FM — and it is the balance contract rather than tradition that
+  says so.
+- **A bounded patience is the wrong shape and it cost most of the method to
+  find out.** The first version stopped a sweep after 64 consecutive losing
+  swaps. On a 12×10×8 half-tet brick summed over 2, 3, 4, 8 and 16 parts that
+  left 1958 faces cut against 1786 for a sweep that runs to the end of the
+  boundary — because how far past the first hill the winning position lies
+  grows with the boundary, and the boundary grows with the mesh. A constant
+  cap looks like a safety valve and is really a quality knob set by the size
+  of the mesh you last tested on.
+- **Pairing only the best of each side is worth nothing at all.** With
+  `KL_WIDTH` at 1, a 40×30×24 half-tet brick at sixteen parts goes from
+  `bfs`'s 14583 cut faces to 14550 — noise. At 8 it is 12239 and at 32 it is
+  11485, but 32 adds ten seconds to that run where 8 adds nothing measurable
+  against the cost of reading the mesh. The width is where the quality stops
+  being worth the arithmetic, not where it stops improving, and the comment
+  says which.
+- **Refinement has no notion of connectedness and stays connected anyway.**
+  `bfs-kl` meets `bfs`'s own piece-count bound at every part count from 2 to
+  32 on the 8×6×4 brick. That is not luck: the gain rule is already most of a
+  connectedness rule, since a zone whose removal would split a part is one
+  with few edges left inside it and so a poor thing to give up. But "most of"
+  is not "all of", so the test shares the bound rather than the argument.
+
+On the mixed 8×6×4 brick, summed over 2, 3, 4, 8 and 16 parts: 783 duplicated
+points for `bfs`, 707 for `bfs-kl`, 718 for `block` — so the tenth it wins back
+is the difference between losing to the best dependency-free geometric method
+and beating it. On the pure-hex brick it is worth 700 against 694, because a
+box cut into boxes leaves a greedy very little room to go astray.
+
+`--imbalance` is still not read by any built-in method, `bfs-kl` included: the
+window it refines inside is the growth's own, expressed in one zone's weight
+rather than in a ratio.
+
+Next: the last of phase 5 — rank reordering onto machine topology.
 
 ### Build trees on this machine
 

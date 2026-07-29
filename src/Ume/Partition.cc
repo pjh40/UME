@@ -279,6 +279,8 @@ constexpr bool HAVE_KAHYPAR =
     misspelled one. */
 constexpr Method TABLE[] = {
     {"bfs", "parts grown outwards along the dual graph", nullptr, true},
+    {"bfs-kl", "grown parts, with each cut refined by Kernighan-Lin swaps",
+        nullptr, true},
     {"block", "a grid of boxes, shaped to the extents of the mesh", nullptr,
         true},
     {"hilbert", "equal runs of a Hilbert curve through the zones", nullptr,

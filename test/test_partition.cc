@@ -1059,13 +1059,18 @@ TEST_CASE("partition: growing a part never looks at a coordinate",
   Part::Options opt;
   opt.nparts = NPARTS;
   Part::Zone_Map grown_a, grown_b, sliced_a, sliced_b;
-  Part::make("bfs")->assign(plain, opt, grown_a);
-  Part::make("bfs")->assign(moved, opt, grown_b);
   Part::make("slab-x")->assign(plain, opt, sliced_a);
   Part::make("slab-x")->assign(moved, opt, sliced_b);
+  CHECK(sliced_a != sliced_b); //!< which is what makes the checks below mean it
 
-  CHECK(grown_a == grown_b);
-  CHECK(sliced_a != sliced_b); //!< which is what makes the first check mean it
+  /* The refinement reads the same dual graph the growth does, so it inherits
+     the property rather than being given it. */
+  for (char const *method : {"bfs", "bfs-kl"}) {
+    INFO(method);
+    Part::make(method)->assign(plain, opt, grown_a);
+    Part::make(method)->assign(moved, opt, grown_b);
+    CHECK(grown_a == grown_b);
+  }
 }
 
 TEST_CASE("partition: a grown part comes out in one piece", "[partition]") {
@@ -1088,9 +1093,21 @@ TEST_CASE("partition: a grown part comes out in one piece", "[partition]") {
   for (int nparts = 2; nparts <= 32; ++nparts) {
     INFO("nparts=" << nparts);
     opt.nparts = nparts;
-    Part::Zone_Map z2r;
-    Part::make("bfs")->assign(mesh, opt, z2r);
-    CHECK(most_pieces(g, z2r) <= (nparts <= 12 ? 1 : 2));
+    /* Refinement has no notion of connectedness at all: it swaps whichever
+       pair of zones buys the most boundary, and nothing stops one of them from
+       being the neck of a part.  Measured, none ever is -- `bfs-kl` meets the
+       same bound as `bfs` at every count here -- and the reason is that the
+       gain rule is already most of a connectedness rule: a zone whose removal
+       would split a part is one with few edges left inside it, which is to say
+       one that costs little to give up and that the sweep therefore does not
+       reach for.  Little, though, is not nothing, so the two methods share the
+       bound rather than the argument. */
+    for (char const *method : {"bfs", "bfs-kl"}) {
+      INFO(method);
+      Part::Zone_Map z2r;
+      Part::make(method)->assign(mesh, opt, z2r);
+      CHECK(most_pieces(g, z2r) <= (nparts <= 12 ? 1 : 2));
+    }
   }
 }
 
@@ -1145,6 +1162,94 @@ TEST_CASE("partition: a grown cut competes with a geometric one",
     CHECK(grown.cut_faces == box.cut_faces);
     CHECK(grown.kinds[Part::POINT].duplicated ==
         box.kinds[Part::POINT].duplicated);
+  }
+}
+
+TEST_CASE("partition: refinement pays for the growth's mistakes",
+    "[partition]") {
+  /* `bfs` cannot go back.  A region stops the moment it is heavy enough, and
+     whatever boundary its frontier happened to have at that step is the cut.
+     `bfs-kl` walks that boundary afterwards, swapping a zone of each half at a
+     time and keeping the best position it reaches; this is what that is worth.
+
+     **Summed over part counts, not pointwise, and that is a finding rather
+     than a presentational choice.**  Refining a cut hands the recursion a
+     different pair of halves, so a better cut at one level can leave a
+     worse-shaped piece below it.  Over 2..32 parts of the two meshes here,
+     eleven percent of the individual figures go the wrong way -- the hex brick
+     at six parts is the worst, 120 cut faces against `bfs`'s 112.  What holds
+     is the total. */
+  //! The two costs the refinement is aimed at, and the one it minimizes
+  /*! Kernighan--Lin works on the dual graph, so `cut_faces` is the objective
+      it can be held to directly and `duplicated` is the traffic that objective
+      stands in for.  Both are reported, because a method that improved the one
+      it optimizes and not the one that matters would be no use. */
+  struct Field {
+    char const *name;
+    long (*of)(Part::Metrics const &);
+  };
+  static constexpr Field FIELDS[] = {
+      {"cut faces", [](Part::Metrics const &m) { return m.cut_faces; }},
+      {"duplicated points", [](Part::Metrics const &m) {
+         return m.kinds[Part::POINT].duplicated;
+       }}};
+
+  Part::Options opt;
+  auto sum = [&](Mesh &mesh, char const *method, Field const &f) {
+    long total = 0;
+    for (int nparts : {2, 3, 4, 8, 16}) {
+      opt.nparts = nparts;
+      Part::Zone_Map z2r;
+      Part::make(method)->assign(mesh, opt, z2r);
+      total += f.of(Part::measure(
+          mesh, Part::build_decomposition(mesh, std::move(z2r), nparts)));
+    }
+    return total;
+  };
+
+  Brick::Spec spec;
+  spec.nx = 8;
+  spec.ny = 6;
+  spec.nz = 4;
+
+  SECTION("on a brick the grid already suits") {
+    /* Every zone weighs the same and the mesh is a box, so the growth had
+       little to get wrong and there is correspondingly little to win back:
+       446 cut faces against 440, and 700 duplicated points against 694.  The
+       test is here so that a refinement that started *costing* something on
+       the easy mesh would be caught. */
+    Mesh mesh;
+    brick(spec, mesh);
+    for (Field const &f : FIELDS) {
+      INFO(f.name);
+      CHECK(sum(mesh, "bfs-kl", f) < sum(mesh, "bfs", f));
+    }
+  }
+
+  SECTION("on a brick whose weights and shape disagree") {
+    /* Half the cells subdivided into tets: the zones now differ eightfold in
+       weight, the greedy has a great deal more to get wrong, and the
+       refinement wins a tenth of the traffic back -- 539 cut faces against
+       598, and 707 duplicated points against 783.
+
+       And that tenth is the difference between losing to the grid and beating
+       it.  `block` scores 718 here, so unrefined `bfs` is 9% worse than a
+       method that reads the coordinates and refined `bfs` is 1.5% better.
+       The margin is thin and it is asserted thinly; the claim being made is
+       that the sign changes, not that it changes by much. */
+    spec.tet_fraction = 0.4;
+    Mesh mesh;
+    brick(spec, mesh);
+    for (Field const &f : FIELDS) {
+      INFO(f.name);
+      /* Measured at just under a tenth on both counts; asserted at a
+         twentieth, because the quantity being bounded is the outcome of a
+         heuristic and not a theorem about it. */
+      CHECK(sum(mesh, "bfs-kl", f) * 20 <= sum(mesh, "bfs", f) * 19);
+    }
+    Field const &dup = FIELDS[1];
+    CHECK(sum(mesh, "bfs", dup) > sum(mesh, "block", dup));
+    CHECK(sum(mesh, "bfs-kl", dup) <= sum(mesh, "block", dup));
   }
 }
 

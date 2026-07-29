@@ -237,12 +237,29 @@ reported differently, so a sweep script can tell "you typed it wrong" from
 | `roundrobin` | the i'th real zone to part `i % nparts` | — |
 | `random` | a shuffle determined by the seed | — |
 | `bfs` | parts grown outwards along the dual graph | — |
+| `bfs-kl` | the same, with each cut refined by Kernighan–Lin swaps | — |
 | `metis-kway-cut` | METIS k-way, minimizing the weight of the cut faces | METIS |
 | `metis-kway-vol` | METIS k-way, minimizing its communication-volume proxy | METIS |
 | `metis-rb` | METIS recursive bisection of the dual graph | METIS |
 | `kahypar` | Mt-KaHyPar, minimizing the points on the wire | Mt-KaHyPar |
 | `kahypar-quality` | the same with flow-based refinement; slower | Mt-KaHyPar |
 | `kahypar-det` | the same, reproducibly, at some cost in quality | Mt-KaHyPar |
+
+`bfs` and `bfs-kl` are the only methods that read neither a coordinate nor a
+library.  `bfs` grows each half of a bisection outwards and cannot go back;
+`bfs-kl` then walks the boundary it left, swapping a zone of each half at a
+time.  Pairs rather than single moves, because the balance the built-in methods
+promise leaves no room for a move that is not weight-neutral.
+
+What the refinement is worth depends on how much the growth had to get wrong.
+Summed over 2, 3, 4, 8 and 16 parts of an 8×6×4 brick at `--tet-fraction 0.4`,
+where the zones differ eightfold in weight: 783 duplicated points for `bfs`,
+707 for `bfs-kl`, and 718 for `block` — so the tenth it wins back is the
+difference between losing to a method that reads the coordinates and beating
+one.  On the same brick with no tets it is worth a hundredth (700 against 694),
+because a box cut into boxes leaves a greedy little room to go astray.  Neither
+figure survives being taken at a single part count; the sweep below is one such
+point, and at it `block` is still ahead.
 
 `roundrobin` and `random` are worst cases rather than proposals, and they are
 worst cases of *different halves* of the cost model: `random` reliably reaches
@@ -353,6 +370,7 @@ nineteen columns:
 | `rcb` | 1.059 | 150 | 185 | 5 | 4.00 | 2971 |
 | `morton` | 1.087 | 148 | 194 | 7 | 6.00 | 3004 |
 | `hilbert` | 1.143 | 155 | 195 | 7 | 5.50 | 3081 |
+| `bfs-kl` | 1.115 | 158 | 200 | 7 | 4.75 | 3168 |
 | `rib` | 1.087 | 161 | 202 | 6 | 4.75 | 3158 |
 | `metis-kway-vol` | 1.087 | 150 | 203 | 6 | 4.00 | 3037 |
 | `bfs` | 1.059 | 174 | 225 | 7 | 5.25 | 3492 |
@@ -361,7 +379,10 @@ nineteen columns:
 | `roundrobin` | 1.003 | 588 | 927 | 7 | 7.00 | 12597 |
 | `random` | 1.059 | 602 | 977 | 7 | 7.00 | 13164 |
 
-Three things in it are worth reading twice.  `metis-kway-vol` optimizes a
+Four things in it are worth reading twice.  `bfs-kl` moves three places up the
+table from `bfs` and pays for it in balance — 1.115 against 1.059, because the
+refinement is allowed to spend the slack the growth left unspent, and a swap of
+two zones of different weight spends some.  `metis-kway-vol` optimizes a
 volume proxy and loses to `metis-kway-cut` on the volume that matters, on this
 mesh and on every other one measured here — its objective is vertex-based, and
 the gap between it and Σ(λ−1) is the gap the hypergraph closes.  `roundrobin`
@@ -480,9 +501,11 @@ Ranks are numbered `0..N-1` and mapped to the machine in whatever order the MPI
 launcher chooses.  Reordering them onto the machine's topology, so that heavy
 neighbor pairs land close, is not implemented.
 
-`bfs` grows parts and does not refine them afterwards.  Kernighan–Lin
-refinement would close some of the gap between it and the library methods in
-the sweep above; it is not implemented either.
+`bfs-kl` refines each bisection as it is made and never revisits it.  A
+refinement pass over the *finished* k-way partition — one that could move a
+zone between any two parts rather than only across the cut that separated
+them — is not implemented, and it is where the rest of the gap to the library
+methods is.
 
 `--imbalance` is passed through to the library methods and honoured by them.
 The built-in methods balance exactly by construction and ignore it.
