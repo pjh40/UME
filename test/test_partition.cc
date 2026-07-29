@@ -25,6 +25,7 @@
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Graph.hh"
 #include "Ume/Partition_Metrics.hh"
+#include "Ume/Partition_Reorder.hh"
 #include "Ume/mesh_audit.hh"
 #include "Ume/partition_check.hh"
 #include <algorithm>
@@ -2624,4 +2625,249 @@ TEST_CASE("kahypar: the part counts it declines are answered anyway",
       else
         CHECK(got == std::vector<int>{0, 1});
     }
+}
+
+/* -------------------------------- rank order ------------------------------ */
+
+namespace {
+
+std::vector<int> identity_order(int nparts) {
+  std::vector<int> v(static_cast<std::size_t>(nparts));
+  std::iota(v.begin(), v.end(), 0);
+  return v;
+}
+
+//! Does `order` give every part a rank of its own, from the ones `mach` has?
+bool is_rank_order(std::vector<int> const &order, Part::Machine const &mach) {
+  std::set<int> const seen(order.begin(), order.end());
+  return seen.size() == order.size() && *seen.begin() >= 0 &&
+      *seen.rbegin() < mach.nranks;
+}
+
+} // namespace
+
+TEST_CASE("reorder: the machine counts hops between rank numbers",
+    "[partition]") {
+  /* Four ranks per node and two nodes per switch, over sixteen ranks: the
+     model is coarse on purpose -- see the header -- so what has to be right
+     is only that it puts the boundaries where the spec says, and that it is
+     a metric-like thing, symmetric and zero on the diagonal, since the
+     placement takes both for granted. */
+  Part::Machine const mach = Part::parse_machine("4x2", 16);
+  REQUIRE(mach.nranks == 16);
+  REQUIRE(mach.depth() == 2);
+
+  CHECK(mach.distance(0, 3) == 0); // one node
+  CHECK(mach.distance(12, 15) == 0);
+  CHECK(mach.distance(0, 4) == 1); // one switch, two nodes
+  CHECK(mach.distance(3, 7) == 1);
+  CHECK(mach.distance(8, 15) == 1);
+  CHECK(mach.distance(0, 8) == 2); // nothing in common
+  CHECK(mach.distance(7, 8) == 2);
+
+  for (int a = 0; a < 16; ++a) {
+    CHECK(mach.distance(a, a) == 0);
+    for (int b = 0; b < 16; ++b) {
+      CHECK(mach.distance(a, b) == mach.distance(b, a));
+      CHECK(mach.distance(a, b) <= mach.depth());
+    }
+  }
+
+  /* A trailing level covering everything is implied, so a job that fits in
+     one node has nothing to choose between its ranks -- and one rank per
+     node is the other end of the same statement. */
+  Part::Machine const one_node = Part::parse_machine("64", 8);
+  for (int a = 0; a < 8; ++a)
+    for (int b = 0; b < 8; ++b)
+      CHECK(one_node.distance(a, b) == 0);
+
+  Part::Machine const spread = Part::parse_machine("1", 8);
+  CHECK(spread.distance(0, 0) == 0);
+  CHECK(spread.distance(0, 1) == 1);
+  CHECK(spread.distance(0, 7) == 1);
+
+  for (char const *bad : {"", "0", "4x", "x4", "4xx2", "node", "-2", "4x0"}) {
+    INFO('"' << bad << '"');
+    CHECK_THROWS_AS(Part::parse_machine(bad, 8), std::invalid_argument);
+  }
+}
+
+TEST_CASE("reorder: renaming the ranks moves the traffic it does not create",
+    "[partition]") {
+  /* What makes reordering safe to do at all is that the zones which were
+     together are still together: every number the methods compete over --
+     duplicated points, cut faces, the total on the wire, the load balance --
+     is the same, and only the labels have moved.  Were that not so,
+     reordering would be a partitioning decision in disguise and would have
+     to be measured as one.
+
+     The comm *matrix*, though, is not simply permuted, and this pins that
+     because it is the trap in the whole idea.  `Owner_Rule::LOWEST_RANK`
+     names the SOURCE of a shared entity by rank number, so an entity held by
+     three ranks is a star centred on the lowest-numbered of them and
+     renaming moves the centre.  Elements do not appear or vanish -- the
+     total is checked to be identical -- but who sends them to whom changes,
+     and so does the neighbour count.
+
+     `place_ranks` therefore rebuilds and re-measures instead of trusting the
+     matrix it chose from.  Measured here: the prediction is 3961 element-
+     hops and the truth is 3957, a tenth of a percent, which is small enough
+     to choose from and too large to report. */
+  constexpr int NPARTS = 8;
+  Mesh mesh;
+  brick(big_spec(0.4), mesh);
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  Part::Zone_Map z2r;
+  Part::make("slab-x")->assign(mesh, opt, z2r);
+
+  Part::Metrics const before =
+      Part::measure(mesh, Part::build_decomposition(mesh, z2r, NPARTS));
+
+  std::vector<int> const order{5, 2, 7, 0, 3, 6, 1, 4};
+  Part::Zone_Map moved = z2r;
+  Part::apply_rank_order(order, moved);
+  Part::Metrics const after = Part::measure(
+      mesh, Part::build_decomposition(mesh, std::move(moved), NPARTS));
+
+  CHECK(after.kinds[Part::POINT].duplicated ==
+      before.kinds[Part::POINT].duplicated);
+  CHECK(after.cut_faces == before.cut_faces);
+  CHECK(after.cut_face_points == before.cut_face_points);
+  CHECK(after.interior_faces == before.interior_faces);
+  CHECK(after.total_comm_elems() == before.total_comm_elems());
+  CHECK(after.kinds[Part::ZONE].imbalance == before.kinds[Part::ZONE].imbalance);
+  for (int k = 0; k < Part::NKINDS; ++k) {
+    INFO(Part::kind_name(k));
+    auto const &a = before.kinds[static_cast<std::size_t>(k)];
+    auto const &b = after.kinds[static_cast<std::size_t>(k)];
+    CHECK(b.duplicated == a.duplicated);
+    CHECK(b.total_local == a.total_local);
+    CHECK(b.total_ghost == a.total_ghost);
+  }
+
+  /* Every element still leaves some rank, but not the same one, and the
+     permuted matrix is not the rebuilt matrix.  Both halves are asserted:
+     the first is the invariant, and the second is the reason `place_ranks`
+     exists. */
+  long permuted_total = 0, disagreements = 0;
+  for (int a = 0; a < NPARTS; ++a)
+    for (int b = 0; b < NPARTS; ++b) {
+      permuted_total += before.sent(a, b);
+      if (after.sent(order[static_cast<std::size_t>(a)],
+              order[static_cast<std::size_t>(b)]) != before.sent(a, b))
+        disagreements += 1;
+    }
+  CHECK(permuted_total == after.total_comm_elems());
+  CHECK(disagreements > 0);
+
+  Part::Machine const mach = Part::parse_machine("4", NPARTS);
+  std::int64_t const predicted = Part::hop_cost(before, mach, order);
+  std::int64_t const achieved =
+      Part::hop_cost(after, mach, identity_order(NPARTS));
+  INFO("predicted " << predicted << ", achieved " << achieved);
+  CHECK(std::abs(predicted - achieved) < predicted / 100);
+
+  /* And the two ways of getting it wrong are refused rather than silently
+     truncated, because both would produce a partition that is well formed
+     and not the one asked for. */
+  CHECK_THROWS_AS(
+      Part::hop_cost(before, mach, identity_order(NPARTS - 1)),
+      std::invalid_argument);
+  Part::Zone_Map copy = z2r;
+  CHECK_THROWS_AS(
+      Part::apply_rank_order(std::vector<int>{0, 1, 2}, copy),
+      std::invalid_argument);
+  CHECK_THROWS_AS(
+      Part::reorder_ranks(before, Part::parse_machine("2", NPARTS - 1)),
+      std::invalid_argument);
+}
+
+TEST_CASE("reorder: a scrambled numbering is put back together",
+    "[partition]") {
+  /* Eight slabs in a row on two nodes of four.  The numbering `slab-x`
+     produces is already the right one -- ranks 0-3 are one half of the mesh
+     and 4-7 the other, so exactly one of the seven cuts crosses between the
+     nodes -- and that is the first thing checked: a method whose parts are
+     numbered along the mesh must be left alone, or reordering would be
+     churn.
+
+     Interleaving the slabs across the two nodes puts *every* cut on the
+     wire, which is the worst numbering of this partition and is what a
+     launcher assigning ranks round robin over nodes would do to it.  What
+     the placement has to do is find its way back, and it does: 4642
+     element-hops become 698, against 696 for the natural numbering.
+
+     Those last two are the owner star again.  The order recovered is not the
+     one that was scrambled -- it is some other numbering with the same slabs
+     on the same two nodes, and which of a shared point's holders sources it
+     differs between them.  So the bound here is a percent rather than an
+     equality, and the number it is a percent of is the natural numbering's
+     cost rather than the scrambled one's. */
+  constexpr int NPARTS = 8;
+  Mesh mesh;
+  brick(big_spec(0.4), mesh);
+  Part::Options opt;
+  opt.nparts = NPARTS;
+  Part::Zone_Map natural;
+  Part::make("slab-x")->assign(mesh, opt, natural);
+
+  Part::Machine const mach = Part::parse_machine("4", NPARTS);
+  auto const id = identity_order(NPARTS);
+  Part::Decompose_Options const dopt;
+
+  Part::Rank_Order const kept =
+      Part::place_ranks(mesh, natural, NPARTS, dopt, mach);
+  CHECK(kept.before > 0);
+  CHECK(kept.order == id);
+  CHECK(kept.after == kept.before);
+
+  std::vector<int> const interleaved{0, 4, 1, 5, 2, 6, 3, 7};
+  Part::Zone_Map scrambled = natural;
+  Part::apply_rank_order(interleaved, scrambled);
+
+  Part::Rank_Order const fixed =
+      Part::place_ranks(mesh, scrambled, NPARTS, dopt, mach);
+  REQUIRE(is_rank_order(fixed.order, mach));
+  INFO("natural " << kept.before << ", interleaved " << fixed.before
+                  << ", recovered " << fixed.after);
+  CHECK(fixed.before > 5 * kept.before);
+  CHECK(fixed.after < fixed.before);
+  CHECK(fixed.after <= kept.before + kept.before / 100);
+}
+
+TEST_CASE("reorder: it never costs more than the order it was given",
+    "[partition]") {
+  /* The one promise made, over every method this build has, every part count
+     and all three meshes.  It is not that the placement is optimal -- this is
+     a quadratic assignment problem and nothing here pretends to solve it --
+     but that a user who asks for it cannot be made worse off, which is what
+     lets `--topology` be added to a sweep without a second thought.  It is
+     also a promise that only a measurement can keep, since the matrix the
+     order was chosen from is not the matrix it produces.
+
+     A flat machine is the boundary case and is checked in the same loop: with
+     nothing to choose between the ranks, the numbering the method produced
+     has to survive untouched. */
+  for (Case const &c : cases()) {
+    INFO(c.describe());
+    Mesh mesh;
+    brick(c.spec, mesh);
+    Part::Options opt;
+    opt.nparts = c.nparts;
+    Part::Zone_Map z2r;
+    Part::make(c.method)->assign(mesh, opt, z2r);
+    Part::Decompose_Options const dopt;
+    auto const id = identity_order(c.nparts);
+
+    Part::Rank_Order const placed = Part::place_ranks(
+        mesh, z2r, c.nparts, dopt, Part::parse_machine("2x2", c.nparts));
+    REQUIRE(is_rank_order(placed.order, Part::parse_machine("2x2", c.nparts)));
+    CHECK(placed.after <= placed.before);
+
+    Part::Rank_Order const flat = Part::place_ranks(
+        mesh, z2r, c.nparts, dopt, Part::parse_machine("1024", c.nparts));
+    CHECK(flat.before == 0);
+    CHECK(flat.order == id);
+  }
 }

@@ -21,6 +21,7 @@
 #include "Ume/Global_Ids.hh"
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Metrics.hh"
+#include "Ume/Partition_Reorder.hh"
 #include "Ume/mesh_audit.hh"
 #include "Ume/partition_check.hh"
 #include "Ume/process_mgmt.hh"
@@ -31,6 +32,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,6 +61,12 @@ Options:
                        reproducible whatever it is; kahypar-det is
   --ghosts D           none | face | point [face]
   --owner R            low | balanced | hash [low]
+  --topology SPEC      Renumber the parts onto a machine described as
+                       x-separated group sizes, leaves first: 4 is four ranks
+                       per node, 4x2 four per node and two nodes per switch.
+                       Heavy neighbors are moved close together.  The parts
+                       themselves are untouched; only which rank each is
+                       given
   --zone-map FILE      Read a zone->part map instead of running a method
   --dump-zone-map FILE Write the zone->part map the method produced
   --metrics            Report what the decomposition costs
@@ -130,10 +138,10 @@ bool write_zone_map(std::string const &path, Part::Zone_Map const &z2r) {
 int main(int argc, char *argv[]) {
   Part::Options opt;
   Part::Decompose_Options dopt;
-  std::string method{"slab"}, zone_map_in, zone_map_out;
+  std::string method{"slab"}, topology, zone_map_in, zone_map_out;
   std::string metrics_csv, comm_matrix_file;
   bool do_audit{false}, do_check{false}, do_write{true}, have_ranks{false};
-  bool do_metrics{false}, do_global_ids{false};
+  bool do_metrics{false}, do_global_ids{false}, have_topology{false};
   std::vector<std::string_view> positional;
 
   for (int i = 1; i < argc; ++i) {
@@ -196,6 +204,9 @@ int main(int argc, char *argv[]) {
           {{"low", static_cast<int>(Part::Owner_Rule::LOWEST_RANK)},
               {"balanced", static_cast<int>(Part::Owner_Rule::LEAST_LOADED)},
               {"hash", static_cast<int>(Part::Owner_Rule::HASH)}}));
+    } else if (arg == "--topology") {
+      topology = next("--topology");
+      have_topology = true;
     } else if (arg == "--zone-map") {
       zone_map_in = next("--zone-map");
     } else if (arg == "--dump-zone-map") {
@@ -257,6 +268,18 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  /* A malformed topology is a typing mistake like a misspelled method, so it
+     is caught here rather than after a mesh has been read. */
+  Part::Machine machine;
+  if (have_topology) {
+    try {
+      machine = Part::parse_machine(topology, opt.nparts);
+    } catch (std::invalid_argument const &e) {
+      std::cerr << "ume_partition: --topology: " << e.what() << '\n';
+      return 2;
+    }
+  }
+
   /* The centroids the geometric methods run on are a Kokkos kernel, so Kokkos
      has to be up before anything touches the Datastore. */
   Ume::initialize(argc, argv);
@@ -289,6 +312,23 @@ int main(int argc, char *argv[]) {
       std::cout << "Method " << partitioner->name() << ": "
                 << partitioner->describe() << '\n';
     }
+    /* Ahead of everything downstream, so that the map which gets dumped,
+       decomposed, measured and written is the renamed one.  It costs two
+       decompositions of its own: what the ranks send each other is what
+       decides where they should sit, and the placement is measured after
+       the fact rather than predicted.  See Partition_Reorder.hh. */
+    if (have_topology) {
+      Part::Rank_Order const placed =
+          Part::place_ranks(mesh, z2r, opt.nparts, dopt, machine);
+      Part::apply_rank_order(placed.order, z2r);
+
+      std::cout << "Topology " << topology << ": " << placed.before
+                << " element-hops per exchange sweep becomes " << placed.after;
+      if (placed.after == placed.before)
+        std::cout << " -- the numbering the method chose is kept";
+      std::cout << '\n';
+    }
+
     if (!zone_map_out.empty() && !write_zone_map(zone_map_out, z2r)) {
       Ume::finalize();
       return 3;

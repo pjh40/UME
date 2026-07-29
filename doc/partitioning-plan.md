@@ -891,7 +891,57 @@ box cut into boxes leaves a greedy very little room to go astray.
 window it refines inside is the growth's own, expressed in one zone's weight
 rather than in a ratio.
 
-Next: the last of phase 5 — rank reordering onto machine topology.
+**Phase 5, rank reordering onto machine topology complete — and phase 5 with
+it.** `Partition_Reorder.hh/.cc` — `Machine`, `parse_machine`, `hop_cost`,
+`reorder_ranks`, `place_ranks`, `apply_rank_order` — `ume_partition
+--topology`, four Catch2 tests and two CTests. All four trees green at 155/155
+and 159/159 with MPI.
+
+Five notes:
+
+- **Renaming the ranks is not quite only a renaming, and finding that out is
+  most of what this commit is.** The test written first asserted that the comm
+  matrix is simply permuted, and it fails: `Owner_Rule::LOWEST_RANK` names the
+  SOURCE of a shared entity by rank *number*, so an entity held by three ranks
+  is a star centred on the lowest of them and renaming moves the centre. The
+  element total, the duplicated counts, the cut faces and the balance are all
+  invariant; the matrix's *shape* and the neighbour counts are not. So
+  `place_ranks` applies its choice, rebuilds, re-measures, and keeps the
+  identity unless the measured cost really fell — the prediction is within a
+  tenth of a percent (3961 against 3957 on the sample) and "never worse than
+  the numbering you had" is worth having as a fact rather than as a model.
+- **Most methods have nothing to gain, and that is the result rather than a
+  disappointment.** On an 8×6×4 `--tet-fraction 0.4` brick at sixteen ranks and
+  `4x2`, `slab-x`, `block`, `hilbert`, `morton`, `bfs`, `bfs-kl`, both `metis`
+  families and `kahypar-det` all keep the numbering they produced. A method
+  that splits recursively numbers its parts so that a contiguous block of ranks
+  is a contiguous piece of mesh — which is the machine tree's own shape, so the
+  work was already done. It pays where the numbering means something else:
+  `linear` goes from 5150 element-hops to 4063 (21%), `random` from 19099 to
+  17452 (9%).
+- **The placement was checked against brute force rather than trusted.** Eight
+  parts is 40320 permutations, so the optimum is computable: over eight methods
+  × `{4, 2x2}` the greedy-plus-swaps answer *is* the optimum in fourteen of the
+  sixteen, and misses by 1.0% and 0.4% on the two `random` cases. That gap is
+  smaller than the owner-star gap above it, which is the useful thing to know —
+  a better QAP solver would buy less than the model already loses.
+- The refinement needs no iteration cap, unlike `Partition_BFS.cc`'s: the cost
+  is a non-negative integer and every accepted swap strictly lowers it, so it
+  terminates on its own. It is \f$O(\mathrm{nparts}^3)\f$ over the *rank* count
+  rather than the mesh, which a thousand ranks still runs in well under a
+  second.
+- `Machine` is a tree of equal-sized groups and nothing finer, on purpose: a
+  real network is not a balanced tree, its distances are not integers, and the
+  rank-to-node mapping is a scheduler policy rather than hardware. What the
+  tree does capture is the distinction that dominates — inside a node against
+  not. Nothing tells the launcher about any of it, so `--map-by` remains the
+  user's to get right, and `doc/partitioning.md` §8 says so.
+
+That closes phase 5, and with it the plan. What `doc/partitioning.md` §8 now
+records as not implemented is the honest remainder: repartitioning an
+already-decomposed set, a k-way refinement pass over the finished partition
+(where the rest of the gap to the library methods is), `--imbalance` for the
+built-in methods, and a machine model richer than a balanced tree.
 
 ### Build trees on this machine
 
@@ -907,10 +957,10 @@ want a different name.
 
 | tree | `USE_MPI` | `UME_SERIAL` | tests |
 |---|---|---|---|
-| `build-nompi-omp/` | OFF | OFF | 148 |
-| `build-nompi-noomp/` | OFF | ON | 148 |
-| `build-mpi-omp/` | ON | OFF | 152 |
-| `build-mpi-noomp/` | ON | ON | 152 |
+| `build-nompi-omp/` | OFF | OFF | 155 |
+| `build-nompi-noomp/` | OFF | ON | 155 |
+| `build-mpi-omp/` | ON | OFF | 159 |
+| `build-mpi-noomp/` | ON | ON | 159 |
 
 All four are `Debug`, built with g++-16 against the spack `ume` environment.
 They were configured fresh rather than renamed from `build/`, `build-serial/`,

@@ -30,6 +30,7 @@ set(UME_INCLUDE_FILES
   Partition.hh
   Partition_Graph.hh
   Partition_Metrics.hh
+  Partition_Reorder.hh
   RaggedRight.hh
   SOA_Entity.hh
   SOA_Idx_Corners.hh
@@ -78,6 +79,7 @@ add_library(Ume
   Partition_KaHyPar.cc
   Partition_METIS.cc
   Partition_Metrics.cc
+  Partition_Reorder.cc
   SOA_Entity.cc
   SOA_Idx_Corners.cc
   SOA_Idx_Edges.cc

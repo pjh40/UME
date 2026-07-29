@@ -39,6 +39,9 @@ ume_partition [options] --ranks N <input.ume> <output-base>
   --seed N             Seed for methods that make random choices
   --ghosts D           none | face | point [face]
   --owner R            low | balanced | hash [low]
+  --topology SPEC      Renumber the parts onto a machine, given as x-separated
+                       group sizes, leaves first: 4x2 is four ranks per node
+                       and two nodes per switch
   --zone-map FILE      Read a zone->part map instead of running a method
   --dump-zone-map FILE Write the zone->part map the method produced
   --metrics            Report what the decomposition costs
@@ -148,6 +151,42 @@ and symmetric, so no rank has to negotiate.  It does concentrate SOURCE duty on
 low ranks, which is why `--owner balanced` (whichever candidate is so far
 sourcing the fewest of that kind) and `--owner hash` are there to measure
 against.
+
+### Which rank a part is given
+
+The method decides what goes together; it says nothing about where the parts
+sit on a machine, and the launcher numbers ranks `0..N-1` however it likes.
+`--topology` renames the parts so that heavy neighbors land close together,
+modelling the machine as a tree of equal-sized groups over consecutive rank
+numbers — `4x2` is four ranks per node and two nodes per switch, and a
+trailing level covering everything is implied.  The cost it minimizes is
+**element-hops**: the elements one exchange sweep puts on the wire, each
+weighted by how many levels of the tree it has to climb.
+
+The model is coarse deliberately.  A real network is not a balanced tree, its
+distances are not integers, and the rank-to-node mapping is a scheduler policy
+rather than a property of the hardware, so a more detailed model would be more
+precisely wrong.  What the tree does capture is the distinction that dominates:
+traffic that stays inside a node against traffic that does not.
+
+**Renaming the ranks is not quite only a renaming**, and it is worth knowing
+why.  The zones that were together are still together, so `point lambda-1`, the
+cut faces, the load balance and the total on the wire are all identical.  But
+`--owner low` names the SOURCE of a shared entity by rank *number*, so an entity
+held by three ranks is a star centred on the lowest-numbered of them, and
+renaming moves the centre: the comm matrix changes shape while its total does
+not.  So the placement is chosen from one matrix and then rebuilt, re-measured,
+and kept only if the measured cost really fell.  The two figures printed are
+both measurements.
+
+**Most methods here have nothing to gain from it**, which is itself the
+result.  On an 8×6×4 `--tet-fraction 0.4` brick at sixteen ranks and `4x2`,
+`slab-x`, `block`, `hilbert`, `bfs-kl`, `metis-*` and `kahypar-det` all keep the
+numbering they produced: a method that splits recursively numbers its parts so
+that a contiguous block of ranks is a contiguous piece of mesh, which is the
+machine tree's own shape.  Where it pays is where the numbering means something
+else — `linear`, which numbers by zone index, goes from 5150 element-hops to
+4063, and `random` from 19099 to 17452.
 
 ### A cut is not a boundary
 
@@ -497,9 +536,18 @@ Repartitioning an already-decomposed set, and partitioning a mesh too large for
 one process, are both out of scope; `build_decomposition` throws rather than
 guessing.
 
-Ranks are numbered `0..N-1` and mapped to the machine in whatever order the MPI
-launcher chooses.  Reordering them onto the machine's topology, so that heavy
-neighbor pairs land close, is not implemented.
+`--topology` places the parts on a tree of equal-sized groups and nothing
+finer.  A machine whose nodes are not all the same size, or whose network is
+not a tree, cannot be described to it, and the placement is a heuristic for a
+quadratic assignment problem rather than a solution to one.  At eight parts,
+where brute force over all 40320 permutations is affordable, it found the
+optimum in fourteen of the sixteen cases checked and came within one percent
+in the other two — but nothing promises that.  What is promised is only that
+the measured cost never rises.
+
+Nothing tells the launcher about any of this.  The renaming assumes rank *r*
+goes where the spec says rank *r* goes, which is `--map-by` on the `mpiexec`
+command line and is the user's to get right.
 
 `bfs-kl` refines each bisection as it is made and never revisits it.  A
 refinement pass over the *finished* k-way partition — one that could move a

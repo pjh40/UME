@@ -842,6 +842,26 @@ add_test(NAME partition_metrics_append
 set_tests_properties(partition_metrics_append PROPERTIES
   FIXTURES_REQUIRED "brick;metrics" FIXTURES_SETUP metrics_table)
 
+# `linear` is the method the rank order has most to do for -- it numbers its
+# parts by zone index, which is nobody's machine -- and this is the driver's
+# own path to the placement, which is the part a missing rebuild would break
+# rather than the arithmetic the Catch2 tests cover.  --check comes along
+# because a renamed zone map has to survive the cross-rank comparison exactly
+# as an unnamed one does; it is the only test that puts the two together.
+add_test(NAME partition_topology
+  COMMAND ume_partition --ranks 8 --method linear --topology 4x2 --metrics
+          --check --no-write brick.ume
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_topology PROPERTIES
+  FIXTURES_REQUIRED brick
+  PASS_REGULAR_EXPRESSION "Topology 4x2: [0-9]+ element-hops")
+
+add_test(NAME partition_topology_bad
+  COMMAND ume_partition --ranks 8 --topology 4x0 --no-write brick.ume
+  WORKING_DIRECTORY ${PARTITION_WORKDIR})
+set_tests_properties(partition_topology_bad PROPERTIES
+  FIXTURES_REQUIRED brick WILL_FAIL TRUE)
+
 # One header and two rows, which is what makes the file plottable.
 add_test(NAME partition_metrics_table
   COMMAND ${CMAKE_COMMAND} -E cat metrics.csv
