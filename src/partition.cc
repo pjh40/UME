@@ -308,6 +308,17 @@ int main(int argc, char *argv[]) {
       std::cout << "Zone map from \"" << zone_map_in << "\"\n";
     } else {
       auto const partitioner = Part::make(method);
+      if (!partitioner) {
+        /* The name is in the table and marked available, but no factory
+           builds it -- a table entry somebody forgot to implement.
+           Part::make() documents that it comes back as nullptr for this
+           driver to report rather than be dereferenced. */
+        std::cerr << "ume_partition: method \"" << method
+                  << "\" is in the method table, but this build has no "
+                     "implementation for it\n";
+        Ume::finalize();
+        return 2;
+      }
       partitioner->assign(mesh, opt, z2r);
       std::cout << "Method " << partitioner->name() << ": "
                 << partitioner->describe() << '\n';
