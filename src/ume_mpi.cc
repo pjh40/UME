@@ -423,8 +423,11 @@ int main(int argc, char *argv[]) {
      ordinary run still needs nothing but the .ume files. */
   std::vector<int> zgid;
   if (referencing && !read_zone_gids(opt.basename, comm.pe(), mesh, zgid)) {
-    std::cerr << "Aborting." << std::endl;
-    return EXIT_FAILURE;
+    /* The same rule as the mesh file above: the side-car is written per rank,
+       so one rank can be missing it while the others are not, and a rank that
+       returns here leaves them waiting in the gathscat. */
+    comm.abort("this rank could not read its .gid side-car");
+    return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
   }
 
   /* This allows us to attach a debugger to a single rank specified in the
