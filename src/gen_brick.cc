@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -167,7 +168,11 @@ int main(int argc, char *argv[]) {
      anything touches the Datastore. */
   Ume::initialize(argc, argv);
   int status = 0;
-  {
+  /* Brick::build() reports a spec it cannot honor with std::invalid_argument
+     and a topology it cannot close with std::logic_error.  Letting either
+     escape main() would end the run in terminate() with no "gen_brick:" line
+     and without reaching Ume::finalize(). */
+  try {
     Mesh mesh;
     Ume::attach_serial_transport(mesh);
     Brick::Stats const stats = Brick::build(spec, mesh);
@@ -206,6 +211,14 @@ int main(int argc, char *argv[]) {
         }
       }
     }
+  } catch (std::invalid_argument const &e) {
+    /* The same exit code the argument checks above return: the spec asked for
+       something that cannot be built. */
+    std::cerr << "gen_brick: " << e.what() << '\n';
+    status = 2;
+  } catch (std::exception const &e) {
+    std::cerr << "gen_brick: " << e.what() << '\n';
+    status = 1;
   }
   Ume::finalize();
   return status;
