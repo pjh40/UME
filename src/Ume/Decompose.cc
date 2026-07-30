@@ -305,6 +305,27 @@ Decomposition build_decomposition(SOA_Idx::Mesh const &src, Zone_Map z2r,
     fp.emplace_back(s2f[static_cast<std::size_t>(s)], r);
   }
 
+  /* A point, edge or face that no side names has no zone to follow, and
+     without one it would be enrolled nowhere: the entity would vanish from
+     every rank and every index above it would shift down, so even a one-rank
+     decomposition would stop reproducing its input.  The audit counts these
+     as non-fatal, so a mesh that carries them is one this has to carry
+     through.  Rank 0 is as good a home as any -- nothing references them, so
+     the choice costs no communication -- and at `nparts == 1` it is the only
+     rank, which is what keeps the identity. */
+  auto keep_unreferenced = [](Pairs &p, auto const &mask, int const n) {
+    std::vector<char> named(static_cast<std::size_t>(n), 0);
+    for (auto const &[g, r] : p)
+      if (g >= 0 && g < n)
+        named[static_cast<std::size_t>(g)] = 1;
+    for (int g = 0; g < n; ++g)
+      if (mask[g] != 0 && !named[static_cast<std::size_t>(g)])
+        p.emplace_back(g, 0);
+  };
+  keep_unreferenced(pp, src.points.mask, pll);
+  keep_unreferenced(ep, src.edges.mask, ell);
+  keep_unreferenced(fp, fmask, fll);
+
   Decomposition d;
   d.nparts = nparts;
   d.z2r = std::move(z2r);
