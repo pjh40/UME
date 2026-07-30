@@ -345,8 +345,17 @@ int main(int argc, char *argv[]) {
   /* Initialize MPI and instantiate the MPI Transport. */
   Ume::Comm::MPI comm(&argc, &argv);
 
+  /* Initialize Kokkos and the memory pool. This should happen right
+   * after the call to MPI_Init for best performance -- and it has to happen
+   * before the command line is read at all: Ume::initialize() takes argc by
+   * reference and strips the --kokkos-* arguments, which parse_args would
+   * otherwise reject as unknown options. */
+  Ume::initialize(argc, argv);
+
   /* Every rank sees the same command line, so a usage error is the same
-     usage error everywhere and no rank is left waiting on another. */
+     usage error everywhere and no rank is left waiting on another.  A missing
+     basename is one of them, which is why there is no separate argc check
+     here. */
   Options opt;
   if (!parse_args(argc, argv, comm.numpe(), opt))
     return EXIT_FAILURE;
@@ -358,10 +367,6 @@ int main(int argc, char *argv[]) {
     std::cerr << "Aborting." << std::endl;
     return EXIT_FAILURE;
   }
-
-  /* Initialize Kokkos and the memory pool. This should happen right
-   * after the call to MPI_Init for best performance. */
-  Ume::initialize(argc, argv);
 
   /* Create a mesh instance and attach the communicator to the mesh. */
   Mesh mesh;
