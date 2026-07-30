@@ -284,7 +284,15 @@ int main(int argc, char *argv[]) {
      has to be up before anything touches the Datastore. */
   Ume::initialize(argc, argv);
   int status = 0;
-  {
+  /* mesh.read(), Partitioner::assign(), build_decomposition() and extract()
+     all report input they cannot make sense of by throwing -- a zone map of
+     the wrong length or naming a part outside [0, nparts), a mesh that
+     already has ghosts, a boundary zone with no real zone behind it.  Those
+     are ordinary bad input, and every other kind of bad input here gets a
+     "ume_partition:" line and an exit code; letting them escape main() would
+     instead end the run in terminate() with neither, and without reaching
+     Ume::finalize(). */
+  try {
     Mesh mesh;
     Ume::attach_serial_transport(mesh);
     {
@@ -480,6 +488,14 @@ int main(int argc, char *argv[]) {
       if (!res)
         status = 5;
     }
+  } catch (std::invalid_argument const &e) {
+    /* The same exit code --topology's own invalid_argument gets: the caller
+       handed this run something it cannot work from. */
+    std::cerr << "ume_partition: " << e.what() << '\n';
+    status = 2;
+  } catch (std::exception const &e) {
+    std::cerr << "ume_partition: " << e.what() << '\n';
+    status = 1;
   }
   Ume::finalize();
   return status;
