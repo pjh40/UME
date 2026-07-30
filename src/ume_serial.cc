@@ -34,6 +34,15 @@ using Mesh_Ptr = std::unique_ptr<Mesh>;
 std::vector<Mesh_Ptr> read_meshes(int argc, char *argv[]);
 
 int main(int argc, char *argv[]) {
+  /* The derived mesh variables are computed with Kokkos kernels, so Kokkos has
+     to be up before anything touches the Datastore.  It also has to be up
+     before the command line is read at all: Ume::initialize() takes argc by
+     reference and strips the --kokkos-* arguments, so until it has run,
+     argv[1] may be one of those rather than the caller's first argument --
+     and `ume_serial --kokkos-num-threads=4 --audit part.00000.ume` would
+     silently skip the audit and then try to open "--audit" as a mesh. */
+  Ume::initialize(argc, argv);
+
   bool audit_only{false};
   if (argc > 1 && std::strcmp(argv[1], "--audit") == 0) {
     audit_only = true;
@@ -44,13 +53,10 @@ int main(int argc, char *argv[]) {
   }
   if (argc == 1) {
     std::cerr << "Usage: ume_serial [--audit] <ume file>+" << std::endl;
+    Ume::finalize();
     return 1;
   }
 
-  /* The derived mesh variables are computed with Kokkos kernels, so Kokkos has
-     to be up before anything touches the Datastore.  This also strips the
-     --kokkos-* arguments before the file names are read. */
-  Ume::initialize(argc, argv);
   int status = 0;
   {
     std::vector<Mesh_Ptr> ranks{read_meshes(argc, argv)};
@@ -122,15 +128,9 @@ int main(int argc, char *argv[]) {
 std::vector<Mesh_Ptr> read_meshes(int const argc, char *argv[]) {
   std::vector<Mesh_Ptr> ranks;
   bool need_sort{false};
-  /* Reachable even though main() checks argc too: Ume::initialize() takes argc
-     by reference and strips the --kokkos-* arguments, so `ume_serial
-     --kokkos-num-threads=4` arrives here with nothing left.  Return rather than
-     std::exit, which would skip the Ume::finalize() main() is structured to
-     reach; an empty result is already how main() reports failure. */
-  if (argc == 1) {
-    std::cerr << "Usage: ume_serial <ume file>+" << std::endl;
-    return ranks;
-  }
+  /* No argc check here: main() now counts the arguments after
+     Ume::initialize() has stripped the --kokkos-* ones, so what arrives is
+     what it saw. */
   for (int i = 1; i < argc; ++i) {
     std::cout << "Reading: " << argv[i] << '\n';
     std::ifstream is(argv[i]);
