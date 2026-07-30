@@ -121,53 +121,72 @@ template <typename T> bool parse(std::string_view text, T &out) {
   return ec == std::errc{} && ptr == last;
 }
 
-//! Returns false, having said why, if the command line does not make sense
-bool parse_args(int argc, char *argv[], int numpe, Options &opt) {
+//! What reading the command line turned out to mean
+/*! Nothing here may std::exit(): MPI is already up by the time the command
+    line is read, and MPI_Finalize() is reached only by returning to main and
+    running out through comm.stop(). */
+enum class Parse { RUN, HELP, ERROR };
+
+//! Says why, on anything but RUN
+Parse parse_args(int argc, char *argv[], int numpe, Options &opt) {
   for (int i = 1; i < argc; ++i) {
     std::string_view const arg{argv[i]};
-    auto next = [&](char const *what) -> std::string_view {
+    //! The next argument, or nullptr having said that it is missing
+    auto next = [&](char const *what) -> char const * {
       if (i + 1 >= argc) {
         std::cerr << "ume_mpi: " << what << " requires an argument\n";
-        std::exit(2);
+        return nullptr;
       }
-      return std::string_view{argv[++i]};
+      return argv[++i];
     };
 
     if (arg == "-h" || arg == "--help") {
       usage(std::cout);
-      std::exit(0);
+      return Parse::HELP;
     } else if (arg == "-i") {
-      if (!parse(next("-i"), opt.iterations)) {
+      char const *const v = next("-i");
+      if (!v)
+        return Parse::ERROR;
+      if (!parse(v, opt.iterations)) {
         std::cerr << "ume_mpi: -i wants a count\n";
-        return false;
+        return Parse::ERROR;
       }
     } else if (arg == "--dump-grad") {
-      opt.dump_grad = next("--dump-grad");
+      char const *const v = next("--dump-grad");
+      if (!v)
+        return Parse::ERROR;
+      opt.dump_grad = v;
     } else if (arg == "--compare") {
-      opt.compare = next("--compare");
+      char const *const v = next("--compare");
+      if (!v)
+        return Parse::ERROR;
+      opt.compare = v;
     } else if (arg == "--tol") {
-      if (!parse(next("--tol"), opt.tol)) {
+      char const *const v = next("--tol");
+      if (!v)
+        return Parse::ERROR;
+      if (!parse(v, opt.tol)) {
         std::cerr << "ume_mpi: --tol wants a number\n";
-        return false;
+        return Parse::ERROR;
       }
     } else if (arg.starts_with("-") && arg.size() > 1) {
       std::cerr << "ume_mpi: unknown option \"" << arg << "\"\n";
-      return false;
+      return Parse::ERROR;
     } else if (opt.basename.empty()) {
       opt.basename = arg;
     } else {
       std::cerr << "ume_mpi: one mesh basename, not two\n";
-      return false;
+      return Parse::ERROR;
     }
   }
 
   if (opt.basename.empty()) {
     usage(std::cerr);
-    return false;
+    return Parse::ERROR;
   }
   if (!opt.dump_grad.empty() && !opt.compare.empty()) {
     std::cerr << "ume_mpi: --dump-grad and --compare are two different runs\n";
-    return false;
+    return Parse::ERROR;
   }
   /* A reference has to be the whole answer.  On several ranks each one holds
      a part of it, and gathering them would be a second, unchecked code path
@@ -176,9 +195,9 @@ bool parse_args(int argc, char *argv[], int numpe, Options &opt) {
     std::cerr << "ume_mpi: --dump-grad wants one rank, so that the partition "
                  "it reads is the serial mesh; this run has "
               << numpe << '\n';
-    return false;
+    return Parse::ERROR;
   }
-  return true;
+  return Parse::RUN;
 }
 
 bool read_mesh(std::string const &basename, int const mype, Mesh &mesh) {
@@ -352,20 +371,36 @@ int main(int argc, char *argv[]) {
    * otherwise reject as unknown options. */
   Ume::initialize(argc, argv);
 
-  /* Every rank sees the same command line, so a usage error is the same
-     usage error everywhere and no rank is left waiting on another.  A missing
-     basename is one of them, which is why there is no separate argc check
-     here. */
+  /* Nothing below may leave main without running out through the teardown at
+     the bottom: MPI_Finalize() is reached only from comm.stop(), and a rank
+     that skips it is a rank mpiexec reports as having died, even on --help.
+     comm.abort() is the one legitimate early exit, and it is not one of
+     these -- every check here fails identically on every rank, so no rank is
+     left waiting on another. */
+  auto teardown = [&comm](int status) {
+    Ume::finalize();
+    comm.stop();
+    return status;
+  };
+
+  /* A missing basename is one of parse_args's own errors, which is why there
+     is no separate argc check here. */
   Options opt;
-  if (!parse_args(argc, argv, comm.numpe(), opt))
-    return EXIT_FAILURE;
+  switch (parse_args(argc, argv, comm.numpe(), opt)) {
+  case Parse::RUN:
+    break;
+  case Parse::HELP:
+    return teardown(EXIT_SUCCESS);
+  case Parse::ERROR:
+    return teardown(EXIT_FAILURE);
+  }
   size_t const ic = opt.iterations;
   bool const referencing = !opt.dump_grad.empty() || !opt.compare.empty();
 
   Reference ref;
   if (!opt.compare.empty() && !read_reference(opt.compare, ref)) {
     std::cerr << "Aborting." << std::endl;
-    return EXIT_FAILURE;
+    return teardown(EXIT_FAILURE);
   }
 
   /* Create a mesh instance and attach the communicator to the mesh. */
@@ -569,9 +604,7 @@ int main(int argc, char *argv[]) {
   if (comm.pe() == 0)
     std::cout << "Done." << std::endl;
 
-  Ume::finalize();
-  comm.stop();
-  return status;
+  return teardown(status);
 }
 
 namespace {
