@@ -19,10 +19,12 @@
 #include "Ume/Brick_Mesh.hh"
 #include "Ume/process_mgmt.hh"
 #include <charconv>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -138,6 +140,26 @@ int main(int argc, char *argv[]) {
 
   if (spec.nx < 1 || spec.ny < 1 || spec.nz < 1) {
     std::cerr << "gen_brick: nx, ny and nz must all be positive\n";
+    return 2;
+  }
+
+  /* Every index in the mesh is an int, and a hex cell carries 24 sides, so
+     the side count runs out of int well before the cell count does.
+     Spec::num_cells() multiplies in int and would wrap silently -- a wrapped
+     negative count then surfaces as "nx, ny and nz must all be positive" from
+     inside the generator, about a request whose numbers were all positive.
+     Multiply in a width that cannot wrap and say what is actually wrong. */
+  constexpr std::int64_t sides_per_cell{24};
+  constexpr std::int64_t max_cells{
+      std::numeric_limits<int>::max() / sides_per_cell};
+  std::int64_t const cells =
+      std::int64_t{spec.nx} * std::int64_t{spec.ny} * std::int64_t{spec.nz};
+  if (cells > max_cells) {
+    std::cerr << "gen_brick: " << spec.nx << 'x' << spec.ny << 'x' << spec.nz
+              << " is " << cells
+              << " cells, whose sides do not fit in the int indices the mesh "
+                 "is built on; the limit is "
+              << max_cells << " cells\n";
     return 2;
   }
 
