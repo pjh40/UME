@@ -727,6 +727,7 @@ bool validate(Mesh &mesh, Spec const &spec, std::ostream &os) {
   /* Each zone is a whole cell (8 corners) or one of six Kuhn tetrahedra (4
      corners), whatever its faces were split into. */
   double total_vol{0.0};
+  bool named_a_zone{false};
   for (int z = 0; z < zll; ++z) {
     if (zmask[z] < 1)
       continue;
@@ -739,10 +740,17 @@ bool validate(Mesh &mesh, Spec const &spec, std::ostream &os) {
     total_vol += vol;
     double const want = (ncorners == 4) ? cell_vol / 6.0 : cell_vol;
     if ((ncorners != 4 && ncorners != 8) || std::abs(vol - want) > eps) {
-      fail("zone volume") << "zone " << z << " has " << ncorners
-                          << " corners and volume " << vol << ", expected "
-                          << want << '\n';
-      break;
+      /* Only the first bad zone is named -- a systematic error would name
+         every zone -- but the sum runs to the end regardless.  The
+         whole-mesh check below is a different question, and answering it
+         from a partial sum reported a second failure that said nothing:
+         a mesh whose volume is exactly right would be called wrong. */
+      if (!named_a_zone) {
+        fail("zone volume") << "zone " << z << " has " << ncorners
+                            << " corners and volume " << vol << ", expected "
+                            << want << '\n';
+        named_a_zone = true;
+      }
     }
   }
   double const want_vol = spec.num_cells() * cell_vol;
