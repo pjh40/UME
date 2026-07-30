@@ -22,6 +22,7 @@
 
 #include "Ume/Partition.hh"
 #include "Ume/Partition_Impl.hh"
+#include "Ume/random.hh"
 #include <algorithm>
 #include <cstdint>
 #include <memory>
@@ -189,30 +190,6 @@ public:
     }
   }
 };
-
-//! One step of SplitMix64, advancing `state`
-/*! The built-in methods may not reach for `std::shuffle` or
-    `std::uniform_int_distribution`: neither has a specified algorithm, so the
-    same seed gives different partitions under libstdc++ and libc++, and
-    `--seed` would only reproduce a run on the machine that made it. */
-std::uint64_t next_random(std::uint64_t &state) {
-  std::uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
-  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-  return z ^ (z >> 31);
-}
-
-//! A uniform draw from `[0, n)`, with `n > 0`
-std::uint64_t bounded_random(std::uint64_t &state, std::uint64_t n) {
-  /* 2^64 % n draws have to be thrown away for the rest to be uniform: taking
-     the modulus of every draw would favour the first 2^64 % n values. */
-  std::uint64_t const reject = (~n + 1u) % n;
-  std::uint64_t x;
-  do {
-    x = next_random(state);
-  } while (x < reject);
-  return x % n;
-}
 
 //! Scatter the zones at random, then cut the shuffle into equal-weight runs
 class Random : public Partitioner {

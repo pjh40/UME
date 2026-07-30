@@ -31,6 +31,7 @@ set(UME_INCLUDE_FILES
   Partition_Graph.hh
   Partition_Metrics.hh
   Partition_Reorder.hh
+  random.hh
   RaggedRight.hh
   SOA_Entity.hh
   SOA_Idx_Corners.hh
