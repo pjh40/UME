@@ -16,6 +16,7 @@
 #include "Ume/Brick_Mesh.hh"
 #include "Ume/Comm_Transport.hh"
 #include "Ume/mesh_audit.hh"
+#include "Ume/random.hh"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -23,7 +24,6 @@
 #include <map>
 #include <numeric>
 #include <ostream>
-#include <random>
 #include <stdexcept>
 
 namespace Ume {
@@ -629,10 +629,15 @@ std::vector<Cell_Type> select_cells(Spec const &spec) {
           std::llround(std::pow(static_cast<double>(target), 1.0 - lambda))),
       1, target);
 
-  std::mt19937_64 rng{spec.seed};
+  /* Fisher-Yates against Ume/random.hh rather than std::shuffle against
+     <random>: `Spec::seed` is documented to make this selection
+     deterministic, and std::shuffle has no specified algorithm, so the same
+     seed gave a different brick under libstdc++ and libc++. */
+  std::uint64_t state = spec.seed;
   std::vector<int> order(static_cast<size_t>(ncells));
   std::iota(order.begin(), order.end(), 0);
-  std::shuffle(order.begin(), order.end(), rng);
+  for (size_t i = order.size(); i > 1; --i)
+    std::swap(order[i - 1], order[bounded_random(state, i)]);
 
   std::vector<char> in_frontier(static_cast<size_t>(ncells), 0);
   std::vector<int> frontier;
@@ -680,7 +685,8 @@ std::vector<Cell_Type> select_cells(Spec const &spec) {
       mark(c);
   }
   while (marked < target && !frontier.empty()) {
-    size_t const pick = static_cast<size_t>(rng() % frontier.size());
+    size_t const pick =
+        static_cast<size_t>(bounded_random(state, frontier.size()));
     int const c = frontier[pick];
     frontier[pick] = frontier.back();
     frontier.pop_back();

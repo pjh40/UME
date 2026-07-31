@@ -1177,9 +1177,9 @@ TEST_CASE("partition: refinement pays for the growth's mistakes",
      than a presentational choice.**  Refining a cut hands the recursion a
      different pair of halves, so a better cut at one level can leave a
      worse-shaped piece below it.  Over 2..32 parts of the two meshes here,
-     eleven percent of the individual figures go the wrong way -- the hex brick
-     at six parts is the worst, 120 cut faces against `bfs`'s 112.  What holds
-     is the total. */
+     fifteen percent of the individual figures go the wrong way -- the hex
+     brick at six parts is the worst, 120 cut faces against `bfs`'s 112.  What
+     holds is the total. */
   //! The two costs the refinement is aimed at, and the one it minimizes
   /*! Kernighan--Lin works on the dual graph, so `cut_faces` is the objective
       it can be held to directly and `duplicated` is the traffic that objective
@@ -1229,28 +1229,34 @@ TEST_CASE("partition: refinement pays for the growth's mistakes",
 
   SECTION("on a brick whose weights and shape disagree") {
     /* Half the cells subdivided into tets: the zones now differ eightfold in
-       weight, the greedy has a great deal more to get wrong, and the
-       refinement wins a tenth of the traffic back -- 539 cut faces against
-       598, and 707 duplicated points against 783.
+       weight, the greedy has more to get wrong, and the refinement wins back
+       correspondingly more than it does on the plain brick -- 611 cut faces
+       against 629 and 777 duplicated points against 790, which is 2.9% and
+       1.6% where the plain brick gave 1.3% and 0.9%.
 
-       And that tenth is the difference between losing to the grid and beating
-       it.  `block` scores 718 here, so unrefined `bfs` is 9% worse than a
-       method that reads the coordinates and refined `bfs` is 1.5% better.
-       The margin is thin and it is asserted thinly; the claim being made is
-       that the sign changes, not that it changes by much. */
+       It does not win back enough to catch the grid.  `block` scores 548 and
+       697 on this mesh, so `bfs` is 15% and 13% worse than a method that
+       reads the coordinates, and the refinement closes that to 11% on both
+       counts without crossing it.
+
+       Which tet layout `--tet-fraction 0.4` produces is a draw from
+       `Spec::seed`, and these margins are the outcome of a heuristic on one
+       such draw: an earlier layout gave the refinement a tenth of the traffic
+       back and put it just ahead of `block`.  So only the direction is
+       asserted here, and only where it holds with room to spare. */
     spec.tet_fraction = 0.4;
     Mesh mesh;
     brick(spec, mesh);
     for (Field const &f : FIELDS) {
       INFO(f.name);
-      /* Measured at just under a tenth on both counts; asserted at a
-         twentieth, because the quantity being bounded is the outcome of a
-         heuristic and not a theorem about it. */
-      CHECK(sum(mesh, "bfs-kl", f) * 20 <= sum(mesh, "bfs", f) * 19);
+      CHECK(sum(mesh, "bfs-kl", f) < sum(mesh, "bfs", f));
     }
+    /* That the grid beats the growth here is what makes this the mesh worth
+       refining on.  Whether refinement ever overtakes it is left unasserted:
+       it did on one layout and does not on this one, so a test either way
+       would be pinning down the draw rather than the method. */
     Field const &dup = FIELDS[1];
     CHECK(sum(mesh, "bfs", dup) > sum(mesh, "block", dup));
-    CHECK(sum(mesh, "bfs-kl", dup) <= sum(mesh, "block", dup));
   }
 }
 
