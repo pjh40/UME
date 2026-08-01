@@ -477,6 +477,102 @@ TEST_CASE("audit: the iota maps are checked", "[brick][audit]") {
   }
 }
 
+/* The conventions below are not this generator's, but the ones the meshes UME
+   was written for use.  They were found by auditing the pipe_3d and
+   AggAdv_short datasets, which the audit rejected until it learned them.  Each
+   section keeps a negative control, so accepting the convention is not the same
+   as no longer checking anything. */
+TEST_CASE(
+    "audit: the reference meshes' conventions are accepted", "[brick][audit]") {
+  SECTION("m:s>s5 == -1 on a phantom side means the same as pointing at self") {
+    Mesh mesh;
+    Ume::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+
+    auto &s2s5 = mesh.ds->access_intv("m:s>s5");
+    int phantoms{0};
+    for (int s = 0; s < mesh.sides.size(); ++s)
+      if (mesh.sides.mask[static_cast<size_t>(s)] < 0) {
+        s2s5[static_cast<size_t>(s)] = -1;
+        phantoms += 1;
+      }
+    REQUIRE(phantoms > 0);
+
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK(res.ok());
+    CHECK(res.problems == 0);
+  }
+
+  SECTION("but a real side still has to have one") {
+    Mesh mesh;
+    Ume::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+
+    auto &s2s5 = mesh.ds->access_intv("m:s>s5");
+    int real = -1;
+    for (int s = 0; s < mesh.sides.size(); ++s)
+      if (mesh.sides.mask[static_cast<size_t>(s)] >= 1) {
+        real = s;
+        break;
+      }
+    REQUIRE(real >= 0);
+    s2s5[static_cast<size_t>(real)] = -1;
+
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("out-of-range m:s>s5"));
+  }
+
+  SECTION("a shared entity records its own rank as the source") {
+    /* Brick_Mesh builds one rank, so there is nothing genuinely shared here;
+       what is under test is the bookkeeping, so a point is simply declared a
+       SOURCE and given the self-referential record the reference files carry
+       for one. */
+    Mesh mesh;
+    Ume::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+    mesh.numpe = 2;
+
+    mesh.points.comm_type[0] = SOA_Idx::Entity::SOURCE;
+    mesh.points.cpy_idx.push_back(0);
+    mesh.points.src_pe.push_back(mesh.mype);
+    mesh.points.src_idx.push_back(0);
+    mesh.points.ghost_mask.push_back(1);
+
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK(res.ok());
+    CHECK(res.problems == 0);
+  }
+
+  SECTION("a self-sourced record on an entity that is not a SOURCE is not") {
+    Mesh mesh;
+    Ume::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+    mesh.numpe = 2;
+
+    /* comm_type left INTERNAL: nothing says this point is shared, so naming
+       this rank as its source names no source at all. */
+    mesh.points.cpy_idx.push_back(0);
+    mesh.points.src_pe.push_back(mesh.mype);
+    mesh.points.src_idx.push_back(0);
+    mesh.points.ghost_mask.push_back(1);
+
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(
+        report.str(), Catch::Matchers::ContainsSubstring("has source rank"));
+  }
+}
+
 TEST_CASE("audit: corruption is detected", "[brick][audit]") {
   Brick::Spec const spec = audit_spec();
 

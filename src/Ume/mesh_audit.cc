@@ -19,6 +19,7 @@
 #include <cmath>
 #include <ostream>
 #include <span>
+#include <tuple>
 #include <vector>
 
 namespace Ume {
@@ -244,14 +245,36 @@ void Auditor::ranges(bool const report) {
   auto stop = [&]() { return report && enough(); };
 
   open("side map ranges");
+  /* Which map is the bad one, for the report.  Only ever called on a side that
+     the short-circuiting test below has already rejected, so the cost of
+     naming it is paid once per problem rather than once per side. */
+  auto const culprit = [&](int const s) -> char const * {
+    for (auto const &[name, v, limit] :
+        {std::tuple{"m:s>z", s2z_[s], zll_}, {"m:s>p1", s2p1_[s], pll_},
+            {"m:s>p2", s2p2_[s], pll_}, {"m:s>e", s2e_[s], ell_},
+            {"m:s>f", s2f_[s], fll_}, {"m:s>c1", s2c1_[s], cll_},
+            {"m:s>c2", s2c2_[s], cll_}, {"m:s>s2", s2s2_[s], sll_},
+            {"m:s>s3", s2s3_[s], sll_}, {"m:s>s4", s2s4_[s], sll_},
+            {"m:s>s5", s2s5_[s], sll_}})
+      if (!in(v, limit))
+        return name;
+    return "map";
+  };
   for (int s = 0; s < sll_ && !stop(); ++s) {
     if (smask_[s] == 0)
       continue; // ghost sides carry no local connectivity
+    /* `m:s>s5` is the other side of the same zone on the same edge, and a
+       phantom side has no such partner.  Brick_Mesh points it back at itself;
+       the meshes UME was written for leave -1 there, the sentinel `m:f>z2`
+       uses for a face with nothing behind it.  Nothing dereferences s5 (see
+       doc/brick_mesh.md), so both spellings mean "no partner". */
+    bool const s5_ok = in(s2s5_[s], sll_) || (smask_[s] < 0 && s2s5_[s] == -1);
     if (!in(s2z_[s], zll_) || !in(s2p1_[s], pll_) || !in(s2p2_[s], pll_) ||
         !in(s2e_[s], ell_) || !in(s2f_[s], fll_) || !in(s2c1_[s], cll_) ||
         !in(s2c2_[s], cll_) || !in(s2s2_[s], sll_) || !in(s2s3_[s], sll_) ||
-        !in(s2s4_[s], sll_) || !in(s2s5_[s], sll_))
-      flag() << "side " << s << " has an out-of-range map entry\n";
+        !in(s2s4_[s], sll_) || !s5_ok)
+      flag() << "side " << s << " has an out-of-range " << culprit(s)
+             << " entry\n";
     else if (s2p1_[s] == s2p2_[s])
       flag() << "side " << s << " has p1 == p2 == " << s2p1_[s] << '\n';
   }
@@ -1129,16 +1152,28 @@ void Auditor::parallel() {
     }
   }
 
+  /* A record can name either of two things, and only one of them is a copy.
+     Decompose writes one record per ghost, all of them remote.  The meshes UME
+     was written for also record every shared point, edge and face here: the
+     COPY entries look like a ghost's (a remote source), but a SOURCE entry
+     names an entity this rank owns, and so points at itself.  A self-sourced
+     record is therefore only wrong when what it names is not a SOURCE. */
   start("copy records");
   for (auto const &k : kinds) {
     Entity const &e = *k.entity;
     size_t const n = std::min({e.cpy_idx.size(), e.src_pe.size(),
         e.src_idx.size(), e.ghost_mask.size()});
     for (size_t i = 0; i < n && !enough(); ++i) {
-      if (!in(e.cpy_idx[i], e.size()))
-        bad() << k.name << " copy " << i << " is local index " << e.cpy_idx[i]
+      int const li = e.cpy_idx[i];
+      if (!in(li, e.size())) {
+        bad() << k.name << " copy " << i << " is local index " << li
               << ", out of [0, " << e.size() << ")\n";
-      else if (!in(e.src_pe[i], m_.numpe) || e.src_pe[i] == m_.mype)
+        continue;
+      }
+      bool const owned = e.src_pe[i] == m_.mype &&
+          li < static_cast<int>(e.comm_type.size()) &&
+          e.comm_type[static_cast<size_t>(li)] == Entity::SOURCE;
+      if (!in(e.src_pe[i], m_.numpe) || (e.src_pe[i] == m_.mype && !owned))
         bad() << k.name << " copy " << i << " has source rank " << e.src_pe[i]
               << " (this is rank " << m_.mype << " of " << m_.numpe << ")\n";
       else if (e.src_idx[i] < 0)

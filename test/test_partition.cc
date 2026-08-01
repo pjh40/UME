@@ -32,6 +32,7 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <cmath>
 #include <cstdint>
 #include <iterator>
@@ -2098,6 +2099,83 @@ TEST_CASE("check: the ranks of a decomposition agree with each other",
     CHECK(res.problems == 0);
     CHECK(res.checks > 0);
   }
+}
+
+/* The reference datasets differ from Decompose's output in two ways that the
+   cross-rank checks used to call errors: feeding a ghost does not make an
+   entity a SOURCE there, and the shared points, edges and faces get copy
+   records of their own alongside the ghosts'.  Rewriting a decomposition into
+   that shape must not change the verdict. */
+TEST_CASE("check: the reference meshes' copy bookkeeping is accepted",
+    "[partition]") {
+  Split split;
+  REQUIRE(split.check().ok());
+
+  int demoted{0}, recorded{0};
+  for (auto const &p : split.parts) {
+    /* A ghosted kind: the reference leaves the source of a ghost INTERNAL. */
+    for (SOA_Idx::Entity *e : {static_cast<SOA_Idx::Entity *>(&p->sides),
+             static_cast<SOA_Idx::Entity *>(&p->corners),
+             static_cast<SOA_Idx::Entity *>(&p->zones)})
+      for (std::size_t i = 0; i < e->comm_type.size(); ++i)
+        if (e->comm_type[i] == SOA_Idx::Entity::SOURCE) {
+          e->comm_type[i] = SOA_Idx::Entity::INTERNAL;
+          demoted += 1;
+        }
+
+    /* A shared kind: the reference records every SOURCE, pointing at itself. */
+    for (SOA_Idx::Entity *e : {static_cast<SOA_Idx::Entity *>(&p->points),
+             static_cast<SOA_Idx::Entity *>(&p->edges),
+             static_cast<SOA_Idx::Entity *>(&p->faces)})
+      for (int i = 0; i < e->size(); ++i)
+        if (e->comm_type[static_cast<std::size_t>(i)] ==
+            SOA_Idx::Entity::SOURCE) {
+          e->cpy_idx.push_back(i);
+          e->src_pe.push_back(p->mype);
+          e->src_idx.push_back(i);
+          e->ghost_mask.push_back(1);
+          recorded += 1;
+        }
+  }
+  REQUIRE(demoted > 0);
+  REQUIRE(recorded > 0);
+
+  Part::Check_Result const res = split.check();
+  INFO(split.last_report);
+  CHECK(res.ok());
+  CHECK(res.problems == 0);
+}
+
+TEST_CASE("check: a ghost whose source is somebody's copy is still caught",
+    "[partition]") {
+  /* The negative control for the relaxation above: INTERNAL is allowed on a
+     ghost's source because it means "not shared", but COPY and GHOST still
+     mean the source is not the authority for the value. */
+  Split split;
+  REQUIRE(split.check().ok());
+
+  bool broke{false};
+  for (auto const &p : split.parts) {
+    SOA_Idx::Entity &e = p->zones;
+    for (std::size_t i = 0; i < e.cpy_idx.size() && !broke; ++i) {
+      int const pe = e.src_pe[i], si = e.src_idx[i];
+      if (pe < 0 || pe >= static_cast<int>(split.parts.size()))
+        continue;
+      split.parts[static_cast<std::size_t>(pe)]
+          ->zones.comm_type[static_cast<std::size_t>(si)] =
+          SOA_Idx::Entity::COPY;
+      broke = true;
+    }
+    if (broke)
+      break;
+  }
+  REQUIRE(broke);
+
+  Part::Check_Result const res = split.check();
+  INFO(split.last_report);
+  CHECK_FALSE(res.ok());
+  CHECK_THAT(split.last_report,
+      Catch::Matchers::ContainsSubstring("whose comm type is"));
 }
 
 TEST_CASE("check: the ranks alone are checkable without the serial mesh",

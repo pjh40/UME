@@ -508,8 +508,15 @@ void Checker::check_pairing() {
               if (t != Entity::COPY && t != Entity::GHOST)
                 where(bad(), r, k, li) << " is a copy of rank " << nbr.pe
                                        << " but its comm type is " << t << '\n';
+              /* Feeding a ghost does not make an entity a SOURCE: that mark
+                 belongs to the shared-entity mechanism, and a rank that only
+                 ghosts its neighbors leaves its own entities INTERNAL.
+                 `check_ghosts` says the same of the same entities; what is
+                 never right is for a source to be somebody's copy. */
               int const ot = oe.comm_type[static_cast<std::size_t>(lo)];
-              if (ot != Entity::SOURCE)
+              bool const ghosting = t == Entity::GHOST;
+              if (ghosting ? (ot == Entity::COPY || ot == Entity::GHOST)
+                           : ot != Entity::SOURCE)
                 where(bad(), nbr.pe, k, lo) << " sources a copy on rank " << r
                                             << " but its comm type is " << ot
                                             << '\n';
@@ -530,18 +537,34 @@ void Checker::check_pairing() {
 }
 
 void Checker::check_ghosts() {
-  start("ghost sources are the same entity, real, on the source rank");
+  /* "Local" rather than "real": a ghosted boundary zone brings its phantom
+     corners with it, so a source may carry a negative mask.  What it may not
+     be is itself a ghost. */
+  start("ghost sources are the same entity, local, on the source rank");
   for (int r = 0; r < n_ && !enough(); ++r)
     for (int k = 0; k < NKINDS && !enough(); ++k) {
       Entity const &e = entity(*ranks_[static_cast<std::size_t>(r)], k);
       int const nl = e.local_size(), ng = e.ghost_local_size();
-      if (static_cast<int>(e.cpy_idx.size()) != ng) {
-        bad() << "rank " << r << " has " << e.cpy_idx.size()
-              << " copy records for " << ng << ' ' << kname(k) << " ghosts\n";
+
+      /* Decompose writes exactly one record per ghost, so record g used to be
+         ghost g.  The meshes UME was written for put the shared points, edges
+         and faces in the same arrays, so there the ghosts are a subset of the
+         records rather than all of them; find them by what they name.  The
+         invariant that matters survives either layout: every ghost slot is
+         named exactly once, and in index order. */
+      std::vector<std::size_t> rec;
+      rec.reserve(static_cast<std::size_t>(ng));
+      for (std::size_t i = 0; i < e.cpy_idx.size(); ++i)
+        if (e.cpy_idx[i] >= nl)
+          rec.push_back(i);
+      if (static_cast<int>(rec.size()) != ng) {
+        bad() << "rank " << r << " has " << rec.size()
+              << " copy records naming a ghost slot, for " << ng << ' '
+              << kname(k) << " ghosts\n";
         continue;
       }
       for (int g = 0; g < ng && !enough(); ++g) {
-        auto const ug = static_cast<std::size_t>(g);
+        auto const ug = rec[static_cast<std::size_t>(g)];
         int const l = nl + g;
         if (e.cpy_idx[ug] != l) {
           where(bad(), r, k, l)
@@ -569,7 +592,14 @@ void Checker::check_ghosts() {
           where(bad(), r, k, l)
               << " is sourced by " << kname(k) << ' ' << si << " on rank " << pe
               << ", whose comm type is " << t << '\n';
-        if (e.ghost_mask[ug] != oe.mask[static_cast<std::size_t>(si)])
+        /* `ghost_mask` is the kind of ghost, not a copy of the source's mask:
+           `renumbering.cc` only asks whether it is zero ("null ghost").
+           Decompose propagates the owner's mask, which is nonzero for a real
+           entity and for a phantom one alike; the reference meshes write 1
+           whatever the source was.  The two agree on the only thing read, and
+           that is what is checked. */
+        if ((e.ghost_mask[ug] == 0) !=
+            (oe.mask[static_cast<std::size_t>(si)] == 0))
           where(bad(), r, k, l)
               << " has ghost_mask " << e.ghost_mask[ug]
               << ", but its source on rank " << pe << " has mask "
