@@ -1,29 +1,73 @@
 # Brick mesh generation
 
-`Ume::Brick` builds a `SOA_Idx::Mesh` in memory from a handful of parameters:
-a structured `nx * ny * nz` lattice of cells, where each cell is either a
-single hexahedral zone or six tetrahedra.  The mixture and the spatial
+`Ume::Brick` builds a `SOA_Idx::Mesh` — UME's structure-of-arrays (SoA) mesh
+representation, indexed by entity number — in memory from a handful of
+parameters: a structured `nx * ny * nz` lattice of cells, where each cell is
+either a single hexahedral zone or six tetrahedra.  The mixture and the spatial
 arrangement of the two cell types are both controllable, so the generator
-produces anything from a pure hex brick, through a hex-dominated mesh with
-tetrahedral inclusions, to a pure tet mesh.
+produces anything from a pure hexahedral ("hex") brick, through a hex-dominated
+mesh with tetrahedral ("tet") inclusions, to a pure tet mesh.
 
 It exists because the library's operators need meshes to run on: meshes with a
 physical boundary, with a topology that is not a uniform hex grid, and with
 geometry that is known analytically so results can be checked rather than
 merely compared against themselves.
 
-Source: `src/Ume/Brick_Mesh.{hh,cc}` (library), `src/gen_brick.cc` (CLI),
-`src/Ume/mesh_audit.{hh,cc}` (mesh-independent consistency checks),
-`test/test_brick.cc` (tests).
+Source: `src/Ume/Brick_Mesh.{hh,cc}` (library), `src/gen_brick.cc` (the
+command-line interface, or CLI), `src/Ume/mesh_audit.{hh,cc}` (mesh-independent
+consistency checks), `test/test_brick.cc` (tests).
 
 The generator supplies only topology, `pcoord`, masks and communication
 structure.  All geometry — `side_vol`, `side_surf`, `corner_vol`,
 `corner_csurf`, `zcoord`, `fcoord`, `ecoord`, `point_norm`, and every inverted
-map — is derived lazily by the `VAR_*::init_()` methods in the Datastore, so
-the mesh a test gets is built by exactly the code paths a mesh read from a file
-would use.
+map — is derived lazily by the `VAR_*::init_()` methods in the Datastore (see
+`doc/datastore.md`), so the mesh a test gets is built by exactly the code paths
+a mesh read from a file would use.
 
-## 1. Using it
+## 1. Vocabulary and notation
+
+UME (Unstructured Mesh Explorations) decomposes a mesh into seven kinds of
+entity.  The first four are the usual ones; the last three are *subzonal* —
+they subdivide a zone, and they are what the library's operators actually
+integrate over.
+
+| entity | what it is |
+|---|---|
+| point | a vertex; carries the coordinates `pcoord` |
+| edge | a segment between two points |
+| face | a planar polygon bounding a zone |
+| zone | a cell of the mesh: a general polyhedron bounded by faces |
+| corner | the subzonal volume around one point of a zone, bounded by the zone centroid, that point, and the midpoints of the zone faces and edges adjacent to it.  A zone has one corner per point |
+| side | the tetrahedron `(zone centroid, face centroid, p1, p2)` on one edge of one face of one zone.  Sides are the principal entity for volumetric calculations |
+| iota | half a side: the tetrahedron `(zone centroid, face centroid, point, edge midpoint)`.  Iotas are optional, and only appear in files at version `UME_VERSION_2` or later |
+
+The surface formed by the zone centroids, face centroids and edge midpoints is
+the *median mesh*, and corners and sides are its cells.  This staggered,
+corner-based discretization is standard in compatible Lagrangian hydrodynamics
+and in the support-operator literature; see [Burton 1994],
+[Caramana et al. 1998] and [Shashkov 1996] for the formulation the library's
+operators follow.
+
+Two naming conventions run through the whole document:
+
+- **Connectivity maps** are named `m:a>b`, read "the map from `a` to `b`",
+  with entities abbreviated by first letter — `p` point, `e` edge, `f` face,
+  `z` zone, `c` corner, `s` side, `a` iota.  A numeric suffix distinguishes
+  several targets of the same kind: `m:e>p1` and `m:e>p2` are an edge's two
+  endpoints.  Maps live in the Datastore under exactly these names.
+- **Masks** are named `<entity-letter>mask` — `pmask`, `emask`, `fmask`,
+  `zmask`, `cmask`, `smask` — and classify each entity as interior, on the
+  physical boundary, or a *ghost*: a read-only local copy of an entity owned
+  by another Message Passing Interface (MPI) rank.  §5 gives the values this
+  generator assigns.
+
+Finally, the gradient operators referred to below are `gradzatp` (gradient of
+a zone-centered field evaluated **at p**oints, by contour integration around
+each point's control volume) and `gradzatz` (**at z**one centers, from
+volume-weighted point gradients).  Each has an `_invert` variant that gathers
+through inverted connectivity instead of scattering, which matters in §9.
+
+## 2. Using it
 
 From the command line:
 
@@ -38,7 +82,7 @@ gen_brick [options] <nx> <ny> <nz> <output.ume>
   --seed N           Seed for the cell selection [fixed default]
   --spacing DX DY DZ Cell size [1 1 1]
   --origin X Y Z     Coordinates of the lattice origin [0 0 0]
-  --phantom-sides    Use the alternative boundary representation (see §5)
+  --phantom-sides    Use the alternative boundary representation (see §6)
   --validate         Check the mesh invariants before writing
   --no-write         Skip the output file; with --validate, a pure check run
 ```
@@ -79,7 +123,7 @@ Ume::Brick::build(spec, cells, mesh);
 `attach_serial_transport` installs a process-local no-op `Transport`.  A mesh
 without one crashes the moment a derived variable calls `scatter()`.
 
-## 2. The two mixture controls
+## 3. The two mixture controls
 
 ### `tet_fraction` and `basis`
 
@@ -92,6 +136,10 @@ tets" is ambiguous, and `basis` selects the denominator:
 | `ZONES` (default) | fraction of resulting zones | `f_cell = t / (6 - 5t)` |
 | `CELLS` | fraction of lattice cells | — |
 
+The conversion follows from counting: if a fraction `c` of `N` cells is
+subdivided, the mesh has `N(1 + 5c)` zones of which `6cN` are tetrahedral, so
+`t = 6c / (1 + 5c)`, which inverts to the entry above.
+
 The cell target is met exactly.  The zone fraction is therefore quantized in
 steps of one cell — five zones — so a requested zone fraction of 0.5 on a
 4×4×4 brick lands at 0.4954.  Both numbers are reported.
@@ -99,8 +147,11 @@ steps of one cell — five zones — so a requested zone fraction of 0.5 on a
 ### `clustering`
 
 `T` tetrahedral cells are grown from `K = round(T^(1 - clustering))` random
-seeds by Eden-style growth: repeatedly take a uniformly random cell from the
-frontier of the marked set and mark it, using 6-connectivity.
+seeds by Eden-style growth [Eden 1961]: repeatedly take a uniformly random cell
+from the frontier of the marked set and mark it, using 6-connectivity (the six
+face neighbors of a lattice cell).  Because the frontier is sampled uniformly
+rather than in order, the marked set stays compact and roughly isotropic
+instead of growing along a preferred axis.
 
 | `clustering` | `K` | result |
 |---|---|---|
@@ -110,12 +161,20 @@ frontier of the marked set and mark it, using 6-connectivity.
 
 Seeds that collide during growth merge, so the realized component count is at
 most `K`.  `Stats::tet_clusters` reports the true count, computed with a
-union-find over the selected cells, rather than the number requested.
+disjoint-set (union-find) forest over the selected cells [Tarjan 1975], using
+path halving in `find` [Tarjan and van Leeuwen 1984], rather than the number
+requested.
 
 Selection is fully determined by `seed`, so a given `Spec` always produces the
-same mesh.
+same mesh — on any platform, not merely on the one that generated it.  That
+portability is why `src/Ume/random.hh` fixes the algorithms rather than calling
+the standard library: it draws from SplitMix64 [Steele et al. 2014] and shuffles
+with an explicit Fisher–Yates loop [Durstenfeld 1964; Knuth 1997, Algorithm
+3.4.2P].  Neither `std::shuffle` nor `std::uniform_int_distribution` has a
+specified algorithm, so the same seed gives different meshes under libstdc++
+and libc++.
 
-## 3. Why hex and tet cells can be mixed
+## 4. Why hex and tet cells can be mixed
 
 Zones in this representation are general polyhedra: a zone is defined by its
 corners and sides, not by a fixed vertex count.  A side is the tetrahedron
@@ -126,7 +185,10 @@ The constraint is conformity.  A subdivided cell presents two triangles on each
 of its six cell faces, so a hex neighbor has to present the same two triangles
 — its quadrilateral face must be split.  That is legal (the hex zone becomes a
 7- to 12-faced polyhedron of unchanged volume), and it is consistent because of
-a property of the Kuhn subdivision:
+a property of the Kuhn subdivision — the decomposition of the unit cube into
+the six tetrahedra `x_p0 >= x_p1 >= x_p2`, one per permutation `p` of the three
+axes, so that tetrahedron `p` has vertices `{(0,0,0), e_p0, e_p0 + e_p1,
+(1,1,1)}` [Kuhn 1960; Freudenthal 1942; Bey 2000]:
 
 > Every Kuhn tetrahedron of a cell contains the body diagonal
 > `(0,0,0)-(1,1,1)`.  The triangulation this induces on a cell face is
@@ -147,7 +209,7 @@ Per-cell inventory:
 | hex, all faces split | 1 | 8 | 12 triangles | 36 |
 | subdivided | 6 | 24 | 12 boundary triangles + 6 internal | 72 |
 
-## 4. Conventions
+## 5. Conventions
 
 ### Orientation
 
@@ -157,11 +219,12 @@ Per-cell inventory:
 ((p2 - zc) x (p1 - zc)) . (fc - zc) / 6
 ```
 
-which is positive when a face ring is traversed counterclockwise *as seen from
-inside the zone* — equivalently, when the ring's right-hand-rule normal points
-at the zone center.  Rather than deriving this per cell type, the builder
-orients every ring at runtime against the zone centroid, and validation asserts
-`side_vol > 0` on every real side.
+where `zc` is the zone centroid and `fc` the face centroid.  This is positive
+when a face ring is traversed counterclockwise *as seen from inside the zone* —
+equivalently, when the ring's right-hand-rule normal points at the zone center.
+Rather than deriving this per cell type, the builder orients every ring at
+runtime against the zone centroid, and validation asserts `side_vol > 0` on
+every real side.
 
 `m:s>c1` and `m:s>c2` are the corners at `p1` and `p2` respectively.
 `corner_csurf` adds `side_surf` to `c1` and subtracts it from `c2`, and
@@ -176,7 +239,12 @@ orients every ring at runtime against the zone centroid, and validation asserts
 | `m:s>s5` | the other side of the same zone on the same edge.  An edge of a closed polyhedron lies in exactly two of its faces; a degenerate boundary zone has one face, so its sides refer to themselves. |
 
 `s3`, `s4` and `s5` are written to the file and renumbered, but are not read by
-any calculation; the conventions above are this generator's choice.
+any calculation; the conventions above are this generator's choice.  The meshes
+UME was written for make the other choice for `m:s>s5` on a phantom side, and
+leave -1 there rather than pointing it back at the side itself — the same
+sentinel `m:f>z2` uses for a face with nothing behind it.  Since nothing
+dereferences `s5`, both spellings mean "no partner", and `mesh_audit` accepts
+either.
 
 ### Masks
 
@@ -185,15 +253,15 @@ any calculation; the conventions above are this generator's choice.
 | points | 1 | -1 | boundary = belongs to a boundary face |
 | edges | 1 | -1 | boundary = belongs to a boundary face |
 | faces | 1 | -1 | boundary = bounded by only one real zone |
-| zones | 1 | -1 | boundary zones only (see §5) |
-| corners | 1 | -1 | boundary zones' corners only (see §5) |
+| zones | 1 | -1 | boundary zones only (see §6) |
+| corners | 1 | -1 | boundary zones' corners only (see §6) |
 | sides | 1 | -1 | phantom exterior sides only; real sides of a boundary zone stay 1 |
 
 No entity is masked 0: a serial mesh has no ghosts.  `m:f>z1` is the real zone
 behind a face; `m:f>z2` is the other zone, or -1 for a boundary face under the
 alternative boundary style.
 
-## 5. Boundary representation
+## 6. Boundary representation
 
 The default, `Boundary_Style::BOUNDARY_ZONES`, gives each boundary face a
 degenerate zone outside the mesh:
@@ -235,7 +303,7 @@ every `pmask != 0` point by it.  Since every corner at a boundary point would
 be excluded, that convention makes `point_volume` zero and the gradient `0/0`
 at every boundary point.  The audit checks for this directly.
 
-## 6. Validation
+## 7. Validation
 
 Checks are split by what they have to know.
 
@@ -257,7 +325,7 @@ check prints.  Together they cover every map the mesh carries: the stored ones
 derives from them (`m:c>s`, `m:z>c`, `m:z>p`, `m:z>pz`, `m:p>zs`, `m:p>rc`),
 the masks they are read with, and the parallel bookkeeping in each `Entity`.
 
-*Topology* — every map entry in range, including the two stronger conditions
+**Topology** — every map entry in range, including the two stronger conditions
 the lazy derivations need: `VAR_zcoord` and `VAR_fcoord` accumulate into
 arrays of *local* zones and faces without bounds checking, and the ragged-map
 derivations index with `std::vector::at`, which throws rather than ignores a
@@ -274,41 +342,51 @@ negative index at a ghost.  Then the relations between the maps:
 | `m:c>p`, `m:c>z` | no two corners of a zone at the same point; a real zone has at least four corners on at least four faces; a ghost corner's zone is out of range or itself a ghost, never real |
 | `m:a>*` | each iota copies the zone, face and edge of its `m:a>s`, sits at one of that side's two endpoints, and shares the side with at most one other iota, at the other endpoint |
 
-*Masks* — every `cmask >= 1` corner belongs to a `zmask >= 1` zone, and every
-`smask > 0` side likewise; a non-ghost side references nothing that is a ghost;
-ghosts are exactly the entities at or above `local_size()`; a side outside the
-real mesh has its face, edge and points marked as boundary too, and its
-`m:s>s2` is a real side, which is what `VAR_point_norm` follows.  Three checks
-name the division that fails without them: every real point owns a
-`cmask >= 1` corner (`gradzatp`'s `point_volume`), every non-ghost zone owns a
-non-ghost corner (`zcoord`), and every non-ghost face owns a non-ghost side
-(`fcoord`).
+**Masks** — the mask groups have to agree with each other and with the index
+ranges:
 
-*Derived* — each derived map against the definition its `VAR_*::init_()` uses:
-`m:c>s` inverts `m:s>c1`/`c2`, `m:z>c` inverts `m:c>z`, `m:z>p` and `m:p>zs`
-are the two readings of `(m:c>p, m:c>z)`, `m:p>rc` keeps the `cmask >= 1`
-corners at each point, and `m:z>pz` is the set of zones sharing a point with a
-zone.  These are cached on first use, so this is also what catches a derived
-map that was built before a map it came from changed.
+- every `cmask >= 1` corner belongs to a `zmask >= 1` zone, and every
+  `smask > 0` side likewise;
+- a non-ghost side references nothing that is a ghost, and ghosts are exactly
+  the entities at or above `local_size()`;
+- a side outside the real mesh has its face, edge and points marked as
+  boundary too, and its `m:s>s2` is a real side, which is what
+  `VAR_point_norm` follows.
 
-*Geometry* — coordinates are finite and no edge has zero length; every real
-`side_vol > 0` and every real `corner_vol > 0`; every real zone has positive
-volume, and the same volume whether it is added up over its sides or over its
-corners; `corner_csurf` closes (sums to zero) over each zone, which is what
-makes `gradzatp` reproduce a constant field, and `side_surz` closes over the
-surface of each real zone, which is what a face ring traversed the wrong way
-about one of its two zones breaks; `point_norm` is a unit vector at
-`pmask < 0` points and zero elsewhere.  Per-zone quantities are accumulated
-through `m:c>z` rather than `m:z>c`, so the geometry checks do not depend on
-how the zone-to-corner map is filtered.
+Three further checks each name the division that fails without them: every
+real point owns a `cmask >= 1` corner (`gradzatp`'s `point_volume`), every
+non-ghost zone owns a non-ghost corner (`zcoord`), and every non-ghost face
+owns a non-ghost side (`fcoord`).
 
-*Parallel* — the `Entity` communication records: matching array lengths, comm
+**Derived** — each derived map against the definition its `VAR_*::init_()`
+uses: `m:c>s` inverts `m:s>c1`/`c2`, `m:z>c` inverts `m:c>z`, `m:z>p` and
+`m:p>zs` are the two readings of `(m:c>p, m:c>z)`, `m:p>rc` keeps the
+`cmask >= 1` corners at each point, and `m:z>pz` is the set of zones sharing a
+point with a zone.  These are cached on first use, so this is also what catches
+a derived map that was built before a map it came from changed.
+
+**Geometry** — the checks run from the local to the global:
+
+- coordinates are finite and no edge has zero length;
+- every real `side_vol > 0` and every real `corner_vol > 0`;
+- every real zone has positive volume, and the same volume whether it is added
+  up over its sides or over its corners;
+- `corner_csurf` closes (sums to zero) over each zone, which is what makes
+  `gradzatp` reproduce a constant field, and `side_surz` closes over the
+  surface of each real zone, which is what a face ring traversed the wrong way
+  about one of its two zones breaks;
+- `point_norm` is a unit vector at `pmask < 0` points and zero elsewhere.
+
+Per-zone quantities are accumulated through `m:c>z` rather than `m:z>c`, so the
+geometry checks do not depend on how the zone-to-corner map is filtered.
+
+**Parallel** — the `Entity` communication records: matching array lengths, comm
 types in range and `GHOST` above `local_size()`, copy records naming a local
 index and a rank other than this one, and neighbor lists whose elements are
 local indices.  Only one partition is present, so this is what can be checked
 without the others.
 
-*Census* (opt-in) — entity counts by mask category, the number of entities
+**Census** (opt-in) — entity counts by mask category, the number of entities
 nothing references, the corner counts of the real zones, and two summary
 lines:
 
@@ -357,7 +435,7 @@ behavior; the report says which groups it skipped and why.
 if anything fails.  It works under `UME_SERIAL`, which is the configuration in
 which the audit's own accumulations are deterministic.
 
-## 7. Gradient accuracy on a mixed mesh
+## 8. Gradient accuracy on a mixed mesh
 
 The corner gradient reproduces a linear field `phi = a.x` exactly on a uniform
 lattice of one cell type, but *not* at a hex/tet interface — the error is about
@@ -365,11 +443,13 @@ lattice of one cell type, but *not* at a hex/tet interface — the error is abou
 under refinement.
 
 This is a property of the discretization rather than of the mesh.  The scheme
-replaces `phi(x)` on each median facet with `phi` at the zone center.  Per zone
-those errors cancel exactly, because each side contributes `+surf` to `c1` and
-`-surf` to `c2` with the same `phi_z`.  Per *point* they cancel only when the
-stencil around the point is symmetric enough, which a uniform lattice is and an
-interface is not.
+replaces `phi(x)` on each median facet — each face of the median mesh of §1 —
+with `phi` at the zone center.  Per zone those errors cancel exactly, because
+each side contributes `+surf` to `c1` and `-surf` to `c2` with the same
+`phi_z`.  Per *point* they cancel only when the stencil around the point is
+symmetric enough, which a uniform lattice is and an interface is not.  This
+first-order consistency condition on the point control volume is the same one
+discussed in [Caramana et al. 1998] and [Shashkov 1996].
 
 Accordingly the linear-field test requires exactness only at points whose
 surrounding cells are all of the same type — which is every interior point of a
@@ -377,12 +457,13 @@ pure hex or pure tet brick, plus the uniform regions of a mixed one.  A mixed
 brick is a good test of topological generality; it is not a good convergence
 study.
 
-## 8. Build coverage
+## 9. Build coverage
 
-The generator itself uses no Kokkos; it is plain C++ and backend agnostic.
-The tests reach Kokkos only through the library's derived variables and the
-gradient operators, so the one build-dependent thing in `test_brick.cc` is a
-tolerance:
+The generator itself uses no Kokkos [Trott et al. 2022] — the performance
+portability layer UME's operators are written against — so it is plain C++ and
+backend agnostic.  The tests reach Kokkos only through the library's derived
+variables and the gradient operators, so the one build-dependent thing in
+`test_brick.cc` is a tolerance:
 
 ```c++
 #if defined(UME_SERIAL)
@@ -393,19 +474,26 @@ constexpr double GRAD_TOL = 1e-12; // Kokkos::atomic_add ordering is not stable
 ```
 
 `gradzatz` accumulates with `atomic_add` on every non-`UME_SERIAL` backend —
-host OpenMP included, not only GPUs — while `gradzatz_invert` is host-only and
-ordered, so an exact comparison between the two is only justified under
-`UME_SERIAL`.  Both configurations are exercised:
+host OpenMP (Open Multi-Processing) included, not only graphics processing
+units (GPUs) — while `gradzatz_invert` is host-only and ordered.  Since
+floating-point addition is not associative [Goldberg 1991], a run-to-run change
+in the order in which contributions land changes the last bits of the sum, so
+an exact comparison between the two is only justified under `UME_SERIAL`.  Both
+configurations are exercised:
 
 | build | brick tests | push vs. pull gradient |
 |---|---|---|
 | default (OpenMP host, multithreaded) | pass | equal to 1e-12 |
 | `-DUME_SERIAL=ON` (`Kokkos::Serial`) | pass | bitwise |
 
+"Push" is `gradzatz`, which scatters each corner's contribution to its point
+with an atomic add; "pull" is `gradzatz_invert`, which gathers through the
+inverted connectivity in a fixed order.
+
 `-DUME_SERIAL=ON` needs a Kokkos built with the Serial backend; without one the
 library itself fails to compile in `mem_exec_spaces.hh`.
 
-## 9. Limitations
+## 10. Limitations
 
 No MPI decomposition.  Every entity is emitted as `INTERNAL` with no ghosts,
 neighbor lists are empty, and `Spec` has no partitioning fields, so a generated
@@ -417,3 +505,61 @@ the parallel gather/scatter paths need.  See `doc/partitioning.md`.
 Faces are planar and cells are rectangular, so the generator cannot produce
 warped or badly conditioned zones.  Non-uniform `dx/dy/dz` is supported, but
 grading and distortion are not.
+
+## References
+
+**Mesh discretization**
+
+- [Burton 1994] D. E. Burton, *Multidimensional discretization of conservation
+  laws for unstructured polyhedral grids*, report UCRL-JC-118306, Lawrence
+  Livermore National Laboratory, 1994.  The corner/side decomposition and the
+  subzonal control volumes used here.
+- [Caramana et al. 1998] E. J. Caramana, D. E. Burton, M. J. Shashkov and
+  P. P. Whalen, "The construction of compatible hydrodynamics algorithms
+  utilizing conservation of total energy," *Journal of Computational Physics*
+  146(1), 227–262, 1998.
+- [Shashkov 1996] M. Shashkov, *Conservative Finite-Difference Methods on
+  General Grids*, CRC Press, 1996.  Support-operator background for the
+  gradient and divergence operators.
+
+**Cell subdivision**
+
+- [Kuhn 1960] H. W. Kuhn, "Some combinatorial lemmas in topology," *IBM
+  Journal of Research and Development* 4(5), 518–524, 1960.  The six-tetrahedra
+  subdivision of a cube by sorting coordinates.
+- [Freudenthal 1942] H. Freudenthal, "Simplizialzerlegungen von beschränkter
+  Flachheit," *Annals of Mathematics* 43(3), 580–582, 1942.  The same
+  triangulation, arrived at independently and usually cited alongside Kuhn.
+- [Bey 2000] J. Bey, "Simplicial grid refinement: on Freudenthal's algorithm
+  and the optimal number of congruence classes," *Numerische Mathematik*
+  85(1), 1–29, 2000.  A modern treatment, including the face-conformity
+  property §4 relies on.
+
+**Cell selection**
+
+- [Eden 1961] M. Eden, "A two-dimensional growth process," in *Proceedings of
+  the Fourth Berkeley Symposium on Mathematical Statistics and Probability*,
+  Vol. 4, 223–239, University of California Press, 1961.  The cluster growth
+  model `clustering` implements.
+- [Tarjan 1975] R. E. Tarjan, "Efficiency of a good but not linear set union
+  algorithm," *Journal of the ACM* 22(2), 215–225, 1975.
+- [Tarjan and van Leeuwen 1984] R. E. Tarjan and J. van Leeuwen, "Worst-case
+  analysis of set union algorithms," *Journal of the ACM* 31(2), 245–281, 1984.
+  Path halving, the compaction rule `count_clusters` uses.
+- [Steele et al. 2014] G. L. Steele Jr., D. Lea and C. H. Flood, "Fast
+  splittable pseudorandom number generators," in *Proceedings of OOPSLA 2014*,
+  453–472, ACM, 2014.  SplitMix64, the generator in `src/Ume/random.hh`.
+- [Durstenfeld 1964] R. Durstenfeld, "Algorithm 235: Random permutation,"
+  *Communications of the ACM* 7(7), 420, 1964.  The in-place Fisher–Yates
+  shuffle.
+- [Knuth 1997] D. E. Knuth, *The Art of Computer Programming, Vol. 2:
+  Seminumerical Algorithms*, 3rd ed., Addison-Wesley, 1997, Algorithm 3.4.2P.
+
+**Implementation**
+
+- [Trott et al. 2022] C. R. Trott et al., "Kokkos 3: Programming model
+  extensions for the exascale era," *IEEE Transactions on Parallel and
+  Distributed Systems* 33(4), 805–817, 2022.
+- [Goldberg 1991] D. Goldberg, "What every computer scientist should know
+  about floating-point arithmetic," *ACM Computing Surveys* 23(1), 5–48, 1991.
+  Why a change in summation order changes the answer.
