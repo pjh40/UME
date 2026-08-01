@@ -935,11 +935,11 @@ Five notes:
   rank-to-node mapping is a scheduler policy rather than hardware. What the
   tree does capture is the distinction that dominates — inside a node against
   not. Nothing tells the launcher about any of it, so `--map-by` remains the
-  user's to get right, and `doc/partitioning.md` §8 says so.
+  user's to get right, and `doc/partitioning.md`'s limitations section says so.
 
-That closes phase 5, and with it the plan. What `doc/partitioning.md` §8 now
-records as not implemented is the honest remainder: repartitioning an
-already-decomposed set, a k-way refinement pass over the finished partition
+That closes phase 5, and with it the plan. What `doc/partitioning.md`'s
+limitations section now records as not implemented is the honest remainder:
+repartitioning an already-decomposed set, a k-way refinement pass over the finished partition
 (where the rest of the gap to the library methods is), `--imbalance` for the
 built-in methods, and a machine model richer than a balanced tree.
 

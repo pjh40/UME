@@ -2,15 +2,17 @@
 
 `ume_partition` reads one serial `.ume` file and writes N per-rank `.ume` files
 that together hold the same mesh.  Which zone goes to which rank is chosen by
-an interchangeable *method* — twenty of them at the time of writing, from
-`slab` through space-filling curves to METIS and Mt-KaHyPar — and what each
-choice costs is measured in the terms the kernels actually pay.
+an interchangeable *method* — eighteen families at the time of writing, or
+twenty-one names counting the per-axis `slab` variants, from `slab` through
+space-filling curves to METIS and Mt-KaHyPar — and what each choice costs is
+measured in the terms the kernels actually pay.
 
-It exists because `gen_brick` produces a single-rank mesh: `mype = 0`,
-`numpe = 1`, every entity `INTERNAL`, empty neighbor lists.  Before this the
-only way to get a multi-rank `.ume` set was a DELFI `UmeDump` through
-`txt2bin`, so the parallel gather/scatter paths — the whole point of UME as a
-proxy app — could not be exercised on a synthetic mesh at all.
+It exists because `gen_brick` produces a single-rank mesh: `mype = 0` (the
+number of this rank), `numpe = 1` (how many there are), every entity
+`INTERNAL`, empty neighbor lists.  Before this the only way to get a multi-rank
+`.ume` set was a DELFI `UmeDump` through `txt2bin`, so the parallel
+gather/scatter paths — the whole point of UME (Unstructured Mesh Explorations)
+as a proxy app — could not be exercised on a synthetic mesh at all.
 
 Source: `src/Ume/Partition.{hh,cc}` and `Partition_{Geometric,BFS,METIS,
 KaHyPar}.cc` (the methods), `src/Ume/Partition_Graph.{hh,cc}` (the dual graph
@@ -18,14 +20,46 @@ and the hypergraph), `src/Ume/Decompose.{hh,cc}` (the mesh splitting),
 `src/Ume/Partition_Metrics.{hh,cc}` (what it cost),
 `src/Ume/partition_check.{hh,cc}` (cross-rank verification),
 `src/Ume/Global_Ids.{hh,cc}` (the side-car), `src/Ume/Comm_Loopback.{hh,cc}`
-(N ranks in one process), `src/partition.cc` (the CLI),
-`test/test_partition.cc` and `test/test_loopback.cc` (tests).
+(N ranks in one process), `src/partition.cc` (the command-line interface, or
+CLI), `test/test_partition.cc` and `test/test_loopback.cc` (tests).
 
 `doc/partitioning-plan.md` is the working record of how this was built, what
 each commit measured, and which claims had to be weakened against
 measurement.  This file describes what is there now.
 
-## 1. Using it
+## 1. Vocabulary and notation
+
+The entity kinds and the two naming conventions come from `doc/brick_mesh.md`
+§1 and are used here without restating them: **point**, **edge**, **face** and
+**zone**, plus the subzonal **corner** and **side**; connectivity maps named
+`m:a>b`, read "the map from `a` to `b`"; and masks named `pmask`, `zmask` and
+so on, which classify an entity as interior, on the physical boundary, or a
+*ghost*.  *Kernel* means one of the library's mesh operators, in practice the
+gradient operators `gradzatp` and `gradzatz`.
+
+UME runs in parallel under the Message Passing Interface (MPI) [MPI Forum
+2023], which numbers the processes of a run `0..N-1`.  Each is a **rank**, and
+each holds one piece of the mesh.  Everything below is about deciding what
+those pieces are and what the split costs.
+
+| term | what it means here |
+|---|---|
+| part | one of the N pieces the mesh is cut into.  A part becomes a rank; which part becomes which rank is `--topology`'s question, and only that |
+| zone map | the array a method produces: one part number per zone of the serial mesh.  It is the entire output of a method (§3) |
+| real | an entity the mesh counts as genuine: `mask >= 1`.  This is the sense the `real` column of the metrics uses |
+| boundary | `mask == -1`.  A point, edge or face on the physical boundary is a genuine entity the kernels still visit, on a branch of their own; a zone, corner or side masked `-1` is a phantom standing in for the outside of the mesh (`doc/brick_mesh.md` §6).  Neither is counted `real` |
+| ghost | a read-only local copy of a zone, corner or side owned by another rank, carried so that local operators have complete stencils.  Ghosts sit at the end of the local index range with `mask == 0` |
+| phantom | anything the kernels skip: `mask < 1`, which covers ghosts and the boundary zones, corners and sides |
+| shared | a point, edge or face that lies on a cut and so exists, as a real entity, on more than one rank |
+| SOURCE, COPY | of the several instances of a shared entity, one is the SOURCE and holds the authoritative value; the rest are COPYs |
+| `gathscat` | gather–scatter: the exchange that reconciles the instances of a shared entity — every COPY sends its contribution to the SOURCE, which combines them (here with `SUM`) and sends the result back |
+| element | one entity's worth of data in one message: the unit the communication metrics count, independent of what is being exchanged.  Its size depends on the field — 8 bytes for a `DBLV` (scalar `double`) field, 24 for a `VEC3V` (3-vector) one |
+| cut | the surface between two parts.  A *cut face* is an interior face whose two zones went to different parts |
+| dual graph | the graph a mesh induces for graph partitioners: a vertex per real zone, an edge per interior face |
+| hypergraph, net | the hypergraph a mesh induces for hypergraph partitioners: a vertex per real zone, and a *net* (hyperedge) per point, holding every zone that touches that point |
+| λ(*p*) | the *connectivity* of entity *p*: how many parts hold it.  Σ(λ−1) summed over an entity kind is the number of elements that kind puts on the wire per exchange [Çatalyürek and Aykanat 1999] |
+
+## 2. Using it
 
 ```
 ume_partition [options] --ranks N <input.ume> <output-base>
@@ -91,7 +125,7 @@ know what local index a shared entity has on rank P — but `extract` produces
 one mesh at a time, so the driver never holds more than one `Mesh`.  Only
 `--check` breaks that, and says so in its help text.
 
-## 2. The parallel model
+## 3. The parallel model
 
 **A `Partitioner` answers exactly one question: which part does each real zone
 belong to?**  Everything downstream — ownership of the points, edges and faces
@@ -111,8 +145,9 @@ Points, edges and faces on a cut are **not ghosts**.  They are duplicated into
 the real index range of every rank that touches them; one instance is
 designated the SOURCE and the rest are COPYs, and the kernels reconcile them
 with `gathscat`.  That distinction is the one the file format was built around
-— `cpy_idx`/`src_pe`/`src_idx` are indexed by *ghost offset*, while
-`myCpys`/`mySrcs` carry the shared entities — and a decomposition needs both.
+— `cpy_idx`/`src_pe`/`src_idx`, which say where each imported entity comes
+from, are indexed by *ghost offset*, while the neighbor lists `myCpys`/`mySrcs`
+carry the shared entities — and a decomposition needs both.
 
 A consequence that is easy to get backwards: a shared point a rank holds but
 does not source is a COPY *in the real index range*, not a ghost.  `owner[g] !=
@@ -163,11 +198,19 @@ trailing level covering everything is implied.  The cost it minimizes is
 **element-hops**: the elements one exchange sweep puts on the wire, each
 weighted by how many levels of the tree it has to climb.
 
-The model is coarse deliberately.  A real network is not a balanced tree, its
-distances are not integers, and the rank-to-node mapping is a scheduler policy
-rather than a property of the hardware, so a more detailed model would be more
-precisely wrong.  What the tree does capture is the distinction that dominates:
-traffic that stays inside a node against traffic that does not.
+This is the classical topology-mapping problem, and the classical heuristic for
+it [Hoefler and Snir 2011]: seed with the busiest part, place each remaining
+part next to whatever it is most tied to, then swap pairs of parts as long as a
+swap lowers the cost.  Stated exactly, it is a quadratic assignment problem
+[Koopmans and Beckmann 1957], which is NP-hard; what is implemented is a
+heuristic for it and nothing more (§9).
+
+The machine model is coarse deliberately.  A real network is not a balanced
+tree, its distances are not integers, and the rank-to-node mapping is a
+scheduler policy rather than a property of the hardware, so a more detailed
+model would be more precisely wrong.  What the tree does capture is the
+distinction that dominates: traffic that stays inside a node against traffic
+that does not.
 
 **Renaming the ranks is not quite only a renaming**, and it is worth knowing
 why.  The zones that were together are still together, so `point lambda-1`, the
@@ -195,7 +238,7 @@ cut faces.  Marking them would make `VAR_point_norm` and the boundary branch of
 `gradzatp` subtract an outward normal that is not there, and the gradient would
 be quietly wrong along every partition boundary.
 
-## 3. Conventions
+## 4. Conventions
 
 **File naming.**  `<output-base>.%05d.ume`, and `<output-base>.%05d.gid` for
 the side-car.  `ume_mpi` and `ume_serial` both take the base and append the
@@ -214,17 +257,20 @@ binary along the same code path, rather than a second implementation to keep in
 step.
 
 **Only stored maps are written.**  Everything derived — `m:z>c`, `zcoord`,
-`point_norm` and the rest — is left for the Datastore to work out, so a
-partition is built by exactly the code paths a mesh read from a file uses.
+`point_norm` and the rest — is left for the Datastore (`doc/datastore.md`) to
+work out, so a partition is built by exactly the code paths a mesh read from a
+file uses.
 
 **The zone map** (`--dump-zone-map`, `--zone-map`) is one integer per line, one
 line per zone of the serial mesh in index order: the part number for a real
 zone, `-1` for one that is not real.  A boundary zone follows the real zone it
 hangs off, which is the decomposition's decision rather than a method's.
 
-**The `.gid` side-car** is text, one section per entity kind, written only when
-asked for.  The `.ume` format has no place to record where an entity sat in the
-serial mesh, and adding one would change what every existing file means:
+**The `.gid` side-car** records the global identifier (GID) of each local
+entity — where it sat in the serial mesh.  It is text, one section per entity
+kind, and is written only when asked for, because the `.ume` format has no
+place to record such a thing and adding one would change what every existing
+file means:
 
 ```
 ume_gid 1
@@ -256,33 +302,42 @@ disagrees.
 It is not symmetric, and should not be: an element is charged to the direction
 it moves in.
 
-## 4. The methods
+## 5. The methods
 
 `--list-methods` reports what *this* build can run; the table below is what the
 source knows about.  A misspelled name and one whose library is missing are
 reported differently, so a sweep script can tell "you typed it wrong" from
 "this machine does not have it".
 
-| method | what it does | needs |
-|---|---|---|
-| `linear` | contiguous ranges of the input zone numbering | — |
-| `slab`, `slab-x/y/z` | slabs normal to the longest extent, or to a named axis | — |
-| `block` | a grid of boxes, shaped to the extents of the mesh | — |
-| `pencil` | columns spanning the shortest extent | — |
-| `rcb` | recursive bisection normal to each piece's longest axis | — |
-| `rib` | recursive bisection normal to each piece's principal axis | — |
-| `morton` | equal runs of a Morton (Z-order) curve | — |
-| `hilbert` | equal runs of a Hilbert curve | — |
-| `roundrobin` | the i'th real zone to part `i % nparts` | — |
-| `random` | a shuffle determined by the seed | — |
-| `bfs` | parts grown outwards along the dual graph | — |
-| `bfs-kl` | the same, with each cut refined by Kernighan–Lin swaps | — |
-| `metis-kway-cut` | METIS k-way, minimizing the weight of the cut faces | METIS |
-| `metis-kway-vol` | METIS k-way, minimizing its communication-volume proxy | METIS |
-| `metis-rb` | METIS recursive bisection of the dual graph | METIS |
-| `kahypar` | Mt-KaHyPar, minimizing the points on the wire | Mt-KaHyPar |
-| `kahypar-quality` | the same with flow-based refinement; slower | Mt-KaHyPar |
-| `kahypar-det` | the same, reproducibly, at some cost in quality | Mt-KaHyPar |
+The `based on` column cites the algorithm each method implements; full entries
+are in the References.  A dash means the method is a naming or an ordering
+convention rather than a published algorithm.
+
+| method | what it does | based on | needs |
+|---|---|---|---|
+| `linear` | contiguous ranges of the input zone numbering | — | — |
+| `slab`, `slab-x/y/z` | slabs normal to the longest extent, or to a named axis | — | — |
+| `block` | a grid of boxes, shaped to the extents of the mesh | — | — |
+| `pencil` | columns spanning the shortest extent | — | — |
+| `rcb` | recursive coordinate bisection (RCB): each cut normal to the piece's longest axis | [Berger and Bokhari 1987], [Williams 1991] | — |
+| `rib` | recursive inertial bisection (RIB): each cut normal to the piece's principal axis, the dominant eigenvector of its coordinate covariance | [Simon 1991] | — |
+| `morton` | equal runs of a Morton (Z-order) curve | [Morton 1966], [Warren and Salmon 1993] | — |
+| `hilbert` | equal runs of a Hilbert curve | [Hilbert 1891], [Skilling 2004] | — |
+| `roundrobin` | the i'th real zone to part `i % nparts` | — | — |
+| `random` | a shuffle determined by the seed | [Durstenfeld 1964], [Steele et al. 2014] | — |
+| `bfs` | parts grown outwards along the dual graph, each from a seed a breadth-first search (BFS) puts out on the rim of what is left | [Farhat 1988] | — |
+| `bfs-kl` | the same, with each cut refined by Kernighan–Lin (KL) swaps | [Kernighan and Lin 1970] | — |
+| `metis-kway-cut` | METIS k-way, minimizing the weight of the cut faces | [Karypis and Kumar 1998b] | METIS |
+| `metis-kway-vol` | METIS k-way, minimizing its communication-volume proxy | [Karypis 2013] | METIS |
+| `metis-rb` | METIS recursive bisection of the dual graph | [Karypis and Kumar 1998a] | METIS |
+| `kahypar` | Mt-KaHyPar, minimizing the points on the wire | [Gottesbüren et al. 2021] | Mt-KaHyPar |
+| `kahypar-quality` | the same with flow-based refinement; slower | [Gottesbüren et al. 2024] | Mt-KaHyPar |
+| `kahypar-det` | the same, reproducibly, at some cost in quality | [Gottesbüren and Hamann 2022] | Mt-KaHyPar |
+
+The library methods are *multilevel*: they coarsen the graph or hypergraph by
+merging vertices, partition the small version, and then uncoarsen it, refining
+the cut at each level.  That scheme is why they beat the direct methods on
+quality, and [Buluç et al. 2016] is a readable survey of it.
 
 `bfs` and `bfs-kl` are the only methods that read neither a coordinate nor a
 library.  `bfs` grows each half of a bisection outwards and cannot go back;
@@ -311,14 +366,16 @@ is only bad on average has to be swept rather than sampled.
 Every method is reproducible from `--seed` with one advertised exception:
 `kahypar` and `kahypar-quality` refine in parallel and race, so the same seed on
 the same mesh gives a different partition run to run.  `kahypar-det` is the
-preset that keeps the promise.  Determinism did not cost quality in the
+preset that keeps the promise, by an algorithm designed for it
+[Gottesbüren and Hamann 2022].  Determinism did not cost quality in the
 measurements taken here — `kahypar-det` ties `kahypar-quality`'s midpoint and
 beats the fast preset outright — but that is a measurement, not a guarantee.
 
-`random`'s shuffle is hand-rolled (SplitMix64 and Fisher–Yates) on purpose.
-Neither `std::shuffle` nor `std::uniform_int_distribution` has a specified
-algorithm, so the same seed would give different partitions under libstdc++ and
-libc++, and `--seed` would only reproduce a run on the machine that made it.
+`random`'s shuffle is hand-rolled — SplitMix64 [Steele et al. 2014] and
+Fisher–Yates [Durstenfeld 1964] — on purpose.  Neither `std::shuffle` nor
+`std::uniform_int_distribution` has a specified algorithm, so the same seed
+would give different partitions under libstdc++ and libc++, and `--seed` would
+only reproduce a run on the machine that made it.
 
 ### Balance
 
@@ -329,7 +386,7 @@ heuristically, so it can and does miss that bound while honouring
 `--imbalance`.  The test file states each family's own promise; do not carry
 the stronger one over to a library method.
 
-## 5. How to read the metrics
+## 6. How to read the metrics
 
 `--metrics` computes everything from the decomposition and the serial mesh
 alone.  No partition mesh is built, so sweeping a dozen methods across a dozen
@@ -357,7 +414,9 @@ Decomposition metrics for 4 parts
 `points.gathscat`.  So Σ(λ−1) is not a surrogate for UME's communication — it
 *is* the number of point elements on the wire.  `gradzatz` does a `DBLV` and a
 `VEC3V` gathscat plus a `VEC3V` scatter, so the byte figure beside it is about
-88 Σ(λ−1), and it is printed because it is a number to put next to a stopwatch.
+88 Σ(λ−1) — 2×8 for the scalar gathscat, 2×24 for the vector one and 24 for the
+one-way scatter — and it is printed because it is a number to put next to a
+stopwatch.
 
 **`nbrs` is the latency-bound half**, and deserves equal billing.  A scattered
 zone map drives `max_neighbors` to N−1 while a blocked one holds it near 26, at
@@ -376,8 +435,10 @@ mesh's surface rather than the decomposition.
 **`cut_face_points` and `point lambda-1` are deliberately both reported.**  A
 point on several cut faces is charged once per face by the first and once
 altogether by the second, and that gap is exactly the gap between what a graph
-edge cut minimizes and what actually goes on the wire.  It is the reason the
-hypergraph methods beat the graph ones.
+edge cut minimizes and what actually goes on the wire — the observation the
+hypergraph model was introduced to fix [Çatalyürek and Aykanat 1999],
+[Hendrickson and Kolda 2000].  It is the reason the hypergraph methods beat the
+graph ones.
 
 **`interior_faces` is the mesh's denominator, not the decomposition's
 numerator** — faces with a real zone on each side, cut or not.  It is the same
@@ -431,7 +492,7 @@ does.  And the top of the table is close: one mesh at one part count separates
 tests are made on a larger mesh summed over several part counts, and why the
 racing presets are never pinned to a number.
 
-## 6. Verification
+## 7. Verification
 
 Five layers, weakest first.  The first three check bookkeeping; only the last
 two could catch a decomposition that is well formed and still wrong.
@@ -461,14 +522,16 @@ two could catch a decomposition that is well formed and still wrong.
    the `.gid` side-cars line the answers up zone for zone.
 
 **Both numerical comparisons use a relative, nonzero tolerance, on purpose.**
-Partitioning genuinely reorders the accumulation in `gradzatz`, and
-`gradzatz` accumulates its point sums with `Kokkos::atomic_add` in every backend
-but Serial, so even the *reference* is only reproducible to roundoff.  An exact
-comparison is wrong even at one rank, where the partition is the input mesh.
-In practice the disagreement is about one ulp: the worst seen across the four
-build trees is 7.3e-12 against gradients of order 2.0e4.
+Partitioning genuinely reorders the accumulation in `gradzatz`, and addition in
+floating point is not associative, so a reordered sum is a different sum
+[Goldberg 1991].  `gradzatz` also accumulates its point sums with
+`Kokkos::atomic_add` [Trott et al. 2022] in every backend but Serial, so even
+the *reference* is only reproducible to roundoff.  An exact comparison is wrong
+even at one rank, where the partition is the input mesh.  In practice the
+disagreement is about one unit in the last place (ulp): the worst seen across
+the four build trees is 7.3e-12 against gradients of order 2.0e4.
 
-## 7. Optional libraries
+## 8. Optional libraries
 
 Neither library is required.  A build with neither is an ordinary
 configuration, must be green on its own terms, and says what it covered:
@@ -481,6 +544,7 @@ commit lands.
 
 | | METIS | Mt-KaHyPar |
 |---|---|---|
+| what it is | multilevel graph partitioner [Karypis and Kumar 1998a] | Multi-Threaded Karlsruhe Hypergraph Partitioner [Gottesbüren et al. 2024] |
 | version used here | 5.1.0 | 1.6.2 |
 | licence | Apache-2.0 | MIT |
 | found by | `cmake/pkgs/METISSupport.cmake` (`SimplePkg`) | `cmake/pkgs/KaHyParSupport.cmake` (`find_package(MtKaHyPar CONFIG)`) |
@@ -491,11 +555,11 @@ libraries are linked rather than vendored — no third-party source is in this
 tree.
 
 `KaHyParSupport.cmake` is the one `pkgs/` module that does not use `SimplePkg`:
-upstream ships a config package, and `libmtkahypar` links oneTBB transitively,
-which a bare header-and-library probe would not carry.  METIS's `SimplePkg`
-caches its result in `CHECK_METIS_DONE` and will not re-probe, so a tree
-configured without it has to be a throwaway; the Mt-KaHyPar switch needs no
-such thing.
+upstream ships a config package, and `libmtkahypar` links oneTBB (Intel's
+oneAPI Threading Building Blocks) transitively, which a bare
+header-and-library probe would not carry.  METIS's `SimplePkg` caches its
+result in `CHECK_METIS_DONE` and will not re-probe, so a tree configured
+without it has to be a throwaway; the Mt-KaHyPar switch needs no such thing.
 
 Mt-KaHyPar is in neither Spack's builtin repo nor Homebrew, so
 `scripts/spack-repo/` carries a package for it as a stopgap:
@@ -508,14 +572,21 @@ spack install mt-kahypar
 Its README says why each line of the recipe is there, including why oneTBB
 forces the whole stack to clang on macOS.  That is a macOS-only problem —
 gcc + oneTBB is the supported combination on Linux — and a clang-built
-`libmtkahypar` linked from g++ works, because the C API is `extern "C"` over
-POD types.
+`libmtkahypar` linked from g++ works, because the C application programming
+interface (API) is `extern "C"` over plain-old-data (POD) types.
 
 ### Why the hypergraph
 
 METIS partitions the **dual graph**: a vertex per real zone, an edge per
 interior face.  Minimizing the weight of the cut edges minimizes cut *faces*,
 which is a proxy for what UME moves.
+
+It is a proxy and not the thing itself, and the reason is well known
+[Çatalyürek and Aykanat 1999], [Hendrickson and Kolda 2000]: an edge cut counts
+each cut face separately, but a point shared by four cut faces is still one
+point, sent once.  METIS's own `metis-kway-vol` objective addresses this from
+the vertex side, which is why it appears in §6's table optimizing something
+adjacent to, but not equal to, the number of elements on the wire.
 
 Mt-KaHyPar partitions a **hypergraph**: a vertex per real zone, and a net per
 point holding the zones that touch it.  Its connectivity objective is
@@ -529,7 +600,7 @@ points, so `build_zone_hypergraph` ignores it and every net weighs 1.  That is
 not a simplification: it is precisely what makes the objective *equal* the
 element count on the wire rather than proportional to it.
 
-## 8. Limitations
+## 9. Limitations
 
 The input must be a serial mesh — one with no ghosts of its own.
 Repartitioning an already-decomposed set, and partitioning a mesh too large for
@@ -557,3 +628,106 @@ methods is.
 
 `--imbalance` is passed through to the library methods and honoured by them.
 The built-in methods balance exactly by construction and ignore it.
+
+## References
+
+**Graph and hypergraph partitioning**
+
+- [Buluç et al. 2016] A. Buluç, H. Meyerhenke, I. Safro, P. Sanders and
+  C. Schulz, "Recent advances in graph partitioning," in *Algorithm
+  Engineering*, Lecture Notes in Computer Science 9220, 117–158, Springer,
+  2016.  A survey of the multilevel scheme the library methods use; the
+  readable entry point for this section.
+- [Çatalyürek and Aykanat 1999] Ü. V. Çatalyürek and C. Aykanat,
+  "Hypergraph-partitioning-based decomposition for parallel sparse-matrix
+  vector multiplication," *IEEE Transactions on Parallel and Distributed
+  Systems* 10(7), 673–693, 1999.  The Σ(λ−1) connectivity metric, and why an
+  edge cut is not a communication volume.
+- [Hendrickson and Kolda 2000] B. Hendrickson and T. G. Kolda, "Graph
+  partitioning models for parallel computing," *Parallel Computing* 26(12),
+  1519–1534, 2000.  What the standard graph model does and does not measure.
+- [Kernighan and Lin 1970] B. W. Kernighan and S. Lin, "An efficient heuristic
+  procedure for partitioning graphs," *Bell System Technical Journal* 49(2),
+  291–307, 1970.  The pairwise-swap refinement `bfs-kl` runs over each cut.
+- [Farhat 1988] C. Farhat, "A simple and efficient automatic FEM domain
+  decomposer," *Computers & Structures* 28(5), 579–602, 1988.  The
+  greedy/breadth-first region growth `bfs` implements.
+
+**Geometric methods**
+
+- [Berger and Bokhari 1987] M. J. Berger and S. H. Bokhari, "A partitioning
+  strategy for nonuniform problems on multiprocessors," *IEEE Transactions on
+  Computers* C-36(5), 570–580, 1987.  Recursive coordinate bisection.
+- [Simon 1991] H. D. Simon, "Partitioning of unstructured problems for parallel
+  processing," *Computing Systems in Engineering* 2(2–3), 135–148, 1991.
+  Inertial and spectral bisection compared on unstructured meshes.
+- [Williams 1991] R. D. Williams, "Performance of dynamic load balancing
+  algorithms for unstructured mesh calculations," *Concurrency: Practice and
+  Experience* 3(5), 457–481, 1991.  Orthogonal recursive bisection, which
+  `rcb` is, measured against spectral bisection and simulated annealing on
+  unstructured meshes.
+- [Hilbert 1891] D. Hilbert, "Ueber die stetige Abbildung einer Linie auf ein
+  Flächenstück," *Mathematische Annalen* 38(3), 459–460, 1891.
+- [Morton 1966] G. M. Morton, *A Computer Oriented Geodetic Data Base and a New
+  Technique in File Sequencing*, technical report, IBM Ltd., Ottawa, 1966.  The
+  Z-order interleaving `morton_index` computes.
+- [Skilling 2004] J. Skilling, "Programming the Hilbert curve," *AIP Conference
+  Proceedings* 707, 381–387, 2004.  The `AxestoTranspose` algorithm
+  `hilbert_index` implements.
+- [Warren and Salmon 1993] M. S. Warren and J. K. Salmon, "A parallel hashed
+  oct-tree N-body algorithm," in *Proceedings of Supercomputing '93*, 12–21,
+  ACM/IEEE, 1993.  Space-filling-curve orderings used as a domain
+  decomposition.
+
+**Libraries**
+
+- [Karypis and Kumar 1998a] G. Karypis and V. Kumar, "A fast and high quality
+  multilevel scheme for partitioning irregular graphs," *SIAM Journal on
+  Scientific Computing* 20(1), 359–392, 1998.  METIS and its multilevel
+  recursive bisection.
+- [Karypis and Kumar 1998b] G. Karypis and V. Kumar, "Multilevel k-way
+  partitioning scheme for irregular graphs," *Journal of Parallel and
+  Distributed Computing* 48(1), 96–129, 1998.  The direct k-way formulation
+  `metis-kway-*` uses.
+- [Karypis 2013] G. Karypis, *METIS: A Software Package for Partitioning
+  Unstructured Graphs, Partitioning Meshes, and Computing Fill-Reducing
+  Orderings of Sparse Matrices, Version 5.1.0*, University of Minnesota, 2013.
+  Where `METIS_OBJTYPE_VOL`, the communication-volume proxy, is defined.
+- [Gottesbüren et al. 2021] L. Gottesbüren, T. Heuer, P. Sanders and S. Schlag,
+  "Scalable shared-memory hypergraph partitioning," in *Proceedings of ALENEX
+  2021*, 16–30, SIAM, 2021.  Mt-KaHyPar's default preset.
+- [Gottesbüren and Hamann 2022] L. Gottesbüren and M. Hamann, "Deterministic
+  parallel hypergraph partitioning," in *Euro-Par 2022*, Lecture Notes in
+  Computer Science 13440, 301–316, Springer, 2022.  The `DETERMINISTIC` preset
+  `kahypar-det` selects.
+- [Gottesbüren et al. 2024] L. Gottesbüren, T. Heuer, N. Maas, P. Sanders and
+  S. Schlag, "Scalable high-quality hypergraph partitioning," *ACM Transactions
+  on Algorithms* 20(1), article 9, 2024.  The framework as a whole, including
+  the flow-based refinement `kahypar-quality` turns on.
+
+**Task placement**
+
+- [Hoefler and Snir 2011] T. Hoefler and M. Snir, "Generic topology mapping
+  strategies for large-scale parallel architectures," in *Proceedings of ICS
+  '11*, 75–84, ACM, 2011.  The greedy placement and pairwise-swap refinement
+  `--topology` performs.
+- [Koopmans and Beckmann 1957] T. C. Koopmans and M. Beckmann, "Assignment
+  problems and the location of economic activities," *Econometrica* 25(1),
+  53–76, 1957.  The quadratic assignment problem `--topology` approximates.
+
+**Implementation**
+
+- [MPI Forum 2023] Message Passing Interface Forum, *MPI: A Message-Passing
+  Interface Standard, Version 4.1*, 2023.
+- [Steele et al. 2014] G. L. Steele Jr., D. Lea and C. H. Flood, "Fast
+  splittable pseudorandom number generators," in *Proceedings of OOPSLA 2014*,
+  453–472, ACM, 2014.  SplitMix64, the generator in `src/Ume/random.hh`.
+- [Durstenfeld 1964] R. Durstenfeld, "Algorithm 235: Random permutation,"
+  *Communications of the ACM* 7(7), 420, 1964.  The in-place Fisher–Yates
+  shuffle `random` uses.
+- [Trott et al. 2022] C. R. Trott et al., "Kokkos 3: Programming model
+  extensions for the exascale era," *IEEE Transactions on Parallel and
+  Distributed Systems* 33(4), 805–817, 2022.
+- [Goldberg 1991] D. Goldberg, "What every computer scientist should know
+  about floating-point arithmetic," *ACM Computing Surveys* 23(1), 5–48, 1991.
+  Why a change in summation order changes the answer.
