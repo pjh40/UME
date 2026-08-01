@@ -521,6 +521,23 @@ two could catch a decomposition that is well formed and still wrong.
    reads back which zone that run spiked so both runs perturb the same one, and
    the `.gid` side-cars line the answers up zone for zone.
 
+All five audit meshes this project generated, so all five agree with this
+project's conventions by construction.  What calibrates the checkers themselves
+is the reference data: meshes the reference application wrote and `txt2bin`
+converted, where a disagreement means the checker is wrong.  They are too large
+to carry in the tree, so the tests that read them are registered only when
+asked for:
+
+```sh
+cmake -DUME_DATA_DIR=/path/to/UME-data ...
+ctest -R reference_audit
+```
+
+Every directory under it holding `.ume` files becomes one test, given every
+file of that directory at once, so a multi-rank dataset gets the cross-rank
+comparison as well as a per-rank audit.  Expect minutes rather than seconds:
+these are meshes of tens of millions of sides.
+
 **Both numerical comparisons use a relative, nonzero tolerance, on purpose.**
 Partitioning genuinely reorders the accumulation in `gradzatz`, and addition in
 floating point is not associative, so a reordered sum is a different sum

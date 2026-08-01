@@ -915,6 +915,77 @@ add_test(NAME partition_audit_all
 set_tests_properties(partition_audit_all PROPERTIES FIXTURES_REQUIRED parts)
 
 #############################################################################
+# Reference meshes
+#############################################################################
+# Everything above audits meshes this project generated, so all of it agrees
+# with itself by construction.  These files do not: they come out of the
+# reference application and through txt2bin, and where they differ from
+# Brick_Mesh and Decompose it is the audit that is wrong.  Connectivity UME's
+# own operators never dereference -- `m:s>s5` is the standing example -- is
+# read by operators there, so a convention this project has no use for is
+# still a fact about the format.
+#
+# They are not in this tree: pipe_3d alone is eight ranks of a mesh with tens
+# of millions of sides.  Point UME_DATA_DIR at a checkout to register them:
+#
+#   cmake -DUME_DATA_DIR=/path/to/UME-data ...
+#
+# Every directory under it holding .ume files becomes one test, given every
+# file in that directory at once, so a multi-rank set gets the cross-rank
+# comparison as well as a per-rank audit.  The globs run at configure time,
+# which is the same bargain every guard in this file makes: a dataset added
+# afterwards needs a re-configure to be seen.
+
+set(UME_DATA_DIR "" CACHE PATH
+  "Directory of reference .ume datasets to audit; empty to skip them")
+
+if(UME_DATA_DIR)
+  if(NOT IS_DIRECTORY ${UME_DATA_DIR})
+    message(FATAL_ERROR
+      "UME_DATA_DIR=${UME_DATA_DIR} is not a directory.  Unset it to skip the "
+      "reference-mesh tests; a typo must not silently skip them instead.")
+  endif()
+
+  file(GLOB_RECURSE ume_data_files "${UME_DATA_DIR}/*.ume")
+  set(ume_data_dirs "")
+  foreach(f ${ume_data_files})
+    get_filename_component(d ${f} DIRECTORY)
+    list(APPEND ume_data_dirs ${d})
+  endforeach()
+  list(REMOVE_DUPLICATES ume_data_dirs)
+  list(SORT ume_data_dirs)
+
+  if(NOT ume_data_dirs)
+    message(FATAL_ERROR
+      "UME_DATA_DIR=${UME_DATA_DIR} holds no .ume files.  Unset it to skip "
+      "the reference-mesh tests.")
+  endif()
+
+  foreach(d ${ume_data_dirs})
+    # One dataset: every rank of it, in rank order, in one invocation.
+    file(GLOB ranks "${d}/*.ume")
+    list(SORT ranks)
+    list(LENGTH ranks nranks)
+
+    file(RELATIVE_PATH name ${UME_DATA_DIR} ${d})
+    string(REGEX REPLACE "[^A-Za-z0-9_]" "_" name "${name}")
+
+    add_test(NAME reference_audit_${name}
+      COMMAND ume_serial --audit ${ranks})
+    # These meshes are large enough that the audit is minutes rather than
+    # seconds, and slower than anything else registered here by two orders of
+    # magnitude; the default timeout is a poor fit in both directions.
+    set_tests_properties(reference_audit_${name} PROPERTIES TIMEOUT 1800)
+
+    message(STATUS
+      "Tests: reference dataset ${name} (${nranks} file(s)) is audited")
+  endforeach()
+else()
+  message(STATUS
+    "Tests: UME_DATA_DIR is unset, so the reference meshes are not audited")
+endif()
+
+#############################################################################
 # Multi-rank tests
 #############################################################################
 # See the note at the top of this file: a test that cannot run here is not
