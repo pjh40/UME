@@ -219,6 +219,21 @@ add_scale_mesh_stitch_test(positive
   "point 0: 1 0 0${_p} 1: 3 0 0${_p} 2: 3 ${_yz}${_p} 3: 5 ${_yz}[\r\n]*"
   1 3)
 
+# The scale factor has to be a whole positive power of 2.  atoi read "1x" as
+# 1 and scaled by it; it read the most negative int as itself, which the
+# power-of-2 test `scale & (scale - 1)` passed (by signed overflow), and the
+# run wrote an unscaled mesh under a negative scale.  scale_mesh_intact_mesh,
+# scale 1 on the same mesh, is the control.
+foreach(_bad_scale IN ITEMS 1x -2147483648)
+  add_test(NAME scale_mesh_bad_scale_${_bad_scale}
+    COMMAND scale_mesh ${_scale_mesh_dir}/intact ${_bad_scale})
+  set_tests_properties(scale_mesh_bad_scale_${_bad_scale} PROPERTIES
+    FIXTURES_REQUIRED scale_mesh_intact_input
+    PASS_REGULAR_EXPRESSION "Scale must be a power of 2, got \"${_bad_scale}\""
+    FAIL_REGULAR_EXPRESSION "Done\\."
+    TIMEOUT 90)
+endforeach()
+
 # UME driver startup tests
 
 # ume_mpi run as an MPI singleton: a missing basename, one that the
@@ -308,9 +323,34 @@ if(TARGET ume_mpi)
       "-DEXPECT=Unable to read a mesh from file \"truncated\\.00000\\.ume\"\\..*Transport::abort: this rank could not read its mesh file"
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
+  # The count after -i has to be a non-negative integer.  atoi read "-1" as -1,
+  # which became SIZE_MAX iterations of every timed loop, and "2x" as 2; both
+  # have to take the job down instead.  A plain "2" runs to the end, the
+  # control.
+  add_test(NAME ume_mpi_negative_iteration_count
+    COMMAND ${CMAKE_COMMAND}
+      "-DARGS=lower-interior$<SEMICOLON>-i$<SEMICOLON>-1"
+      "-DEXPECT=iteration count after -i .*got \"-1\".*Transport::abort: invalid iteration count"
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_trailing_garbage_iteration_count
+    COMMAND ${CMAKE_COMMAND}
+      "-DARGS=lower-interior$<SEMICOLON>-i$<SEMICOLON>2x"
+      "-DEXPECT=iteration count after -i .*got \"2x\".*Transport::abort: invalid iteration count"
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_iteration_count
+    COMMAND ${CMAKE_COMMAND}
+      "-DARGS=lower-interior$<SEMICOLON>-i$<SEMICOLON>2"
+      -DEXPECT_SUCCESS=ON
+      "-DEXPECT=Checking gradient result.*Done\\."
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
   set_tests_properties(
     ume_mpi_no_interior_zone ume_mpi_interior_zones_in_lower_half
-    ume_mpi_long_basename ume_mpi_truncated_mesh PROPERTIES
+    ume_mpi_long_basename ume_mpi_truncated_mesh
+    ume_mpi_negative_iteration_count ume_mpi_trailing_garbage_iteration_count
+    ume_mpi_iteration_count PROPERTIES
     FIXTURES_REQUIRED ume_mpi_zone_mask_meshes
     TIMEOUT 90)
 endif()

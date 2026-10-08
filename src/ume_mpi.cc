@@ -32,10 +32,13 @@
 #include "Ume/utils.hh"
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
 using Mesh = Ume::SOA_Idx::Mesh;
@@ -84,7 +87,19 @@ int main(int argc, char *argv[]) {
 
   size_t ic = 1; // set iteration count to 1 for default
   if (argc > 3 && std::string(argv[2]) == "-i") {
-    ic = std::atoi(argv[3]);
+    /* from_chars into a size_t refuses a sign, so "-1" is an error rather
+       than SIZE_MAX iterations, and the whole argument has to be the number. */
+    std::string_view const arg{argv[3]};
+    auto const [end, ec] =
+        std::from_chars(arg.data(), arg.data() + arg.size(), ic);
+    if (ec != std::errc{} || end != arg.data() + arg.size()) {
+      if (comm.pe() == 0)
+        std::cerr << "ume_mpi: the iteration count after -i has to be a "
+                     "non-negative integer, got \""
+                  << arg << '"' << std::endl;
+      comm.abort("invalid iteration count");
+      return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
+    }
   }
 
   /* This allows us to attach a debugger to a single rank specified in the

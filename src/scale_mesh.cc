@@ -28,10 +28,13 @@
 #include "Ume/utils.hh"
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <fstream>
 #include <iostream>
 #include <ranges>
 #include <string>
+#include <string_view>
+#include <system_error>
 
 bool read_mesh(
     char const *const basename, int const mype, Ume::SOA_Idx::Mesh &mesh);
@@ -72,9 +75,17 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  int scale = atoi(argv[2]);
-  if ((scale == 0) || ((scale & (scale - 1)) != 0)) {
-    std::cerr << "Scale must be a power of 2" << std::endl;
+  /* The whole argument has to be the number, and it has to be positive before
+     `scale & (scale - 1)` means anything: on the most negative int the
+     subtraction overflows. */
+  std::string_view const scale_arg{argv[2]};
+  int scale = 0;
+  auto const [end, ec] = std::from_chars(
+      scale_arg.data(), scale_arg.data() + scale_arg.size(), scale);
+  if (ec != std::errc{} || end != scale_arg.data() + scale_arg.size() ||
+      scale < 1 || (scale & (scale - 1)) != 0) {
+    std::cerr << "Scale must be a power of 2, got \"" << scale_arg << '"'
+              << std::endl;
     return 1;
   }
 
