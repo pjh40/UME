@@ -112,8 +112,19 @@ void gradzatz(Ume::SOA_Idx::Mesh &mesh, DBLV_T const &zone_field,
         }
       });
 
+  /* gathscat works on the host vectors, so "gradzatz-1"'s accumulation has to
+     come back from the device before it runs and go out again afterwards;
+     otherwise the exchange sums zeros and "gradzatz-2" divides by a volume
+     that never saw its neighbors' contributions.  Where host and device
+     memory alias, these copies are no-ops. */
+  Kokkos::deep_copy(h_point_volume, d_point_volume);
+  Kokkos::deep_copy(h_point_gradient, d_point_gradient);
+
   mesh.points.gathscat(Ume::Comm::Op::SUM, point_volume);
   mesh.points.gathscat(Ume::Comm::Op::SUM, point_gradient);
+
+  Kokkos::deep_copy(d_point_volume, h_point_volume);
+  Kokkos::deep_copy(d_point_gradient, h_point_gradient);
 
   /*
     Divide by point control volume to get gradient.  If a point is on the outer
