@@ -14,14 +14,15 @@
 
   Writes, or prints the point coordinates of, a single-rank Ume binary mesh:
 
-      point_mesh write <output.ume> [<x>...]
+      point_mesh write <output.ume> [<x>[,<y>,<z>]...]
       point_mesh print <input.ume>
 
-  `write` makes a mesh whose only entities are local points at (x, 0, 0), one
-  per <x>.  `print` writes one line per point of any mesh, "point <i>: x y z",
-  with each coordinate in its shortest round-trip form.  The scale_mesh tests
-  write a mesh with the first, run scale_mesh on it, and read where the
-  stitched copy of each point landed with the second.
+  `write` makes a mesh whose only entities are local points, one per argument,
+  at (x, y, z), or at (x, 0, 0) where only <x> is given.  `print` writes one
+  line per point of any mesh, "point <i>: x y z", with each coordinate in its
+  shortest round-trip form.  The scale_mesh tests write a mesh with the first,
+  run scale_mesh on it, and read where the stitched copy of each point landed
+  with the second.
 */
 
 #include "Ume/SOA_Idx_Mesh.hh"
@@ -32,6 +33,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <system_error>
@@ -49,15 +51,30 @@ std::optional<double> parse_coord(std::string_view const text) {
   return value;
 }
 
-int write_mesh(char const *const fname, std::span<char *const> const xs) {
-  std::vector<double> coords;
-  for (std::string_view const text : xs) {
-    auto const x = parse_coord(text);
-    if (!x) {
-      std::cerr << "point_mesh: \"" << text << "\" is not a coordinate\n";
+/* The point in `text`, "x" or "x,y,z", or nothing if it is neither. */
+std::optional<std::array<double, 3>> parse_point(std::string_view const text) {
+  std::array<double, 3> point{};
+  std::size_t n{0};
+  for (auto const part : std::views::split(text, ',')) {
+    auto const coord = parse_coord(std::string_view{part.begin(), part.end()});
+    if (n == point.size() || !coord)
+      return std::nullopt;
+    point[n++] = *coord;
+  }
+  if (n != 1 && n != point.size())
+    return std::nullopt;
+  return point;
+}
+
+int write_mesh(char const *const fname, std::span<char *const> const args) {
+  std::vector<std::array<double, 3>> coords;
+  for (std::string_view const text : args) {
+    auto const point = parse_point(text);
+    if (!point) {
+      std::cerr << "point_mesh: \"" << text << "\" is not a point\n";
       return EXIT_FAILURE;
     }
-    coords.push_back(*x);
+    coords.push_back(*point);
   }
 
   Ume::SOA_Idx::Mesh mesh;
@@ -74,7 +91,7 @@ int write_mesh(char const *const fname, std::span<char *const> const xs) {
   mesh.points.resize(npoints, npoints, 0);
   auto &pcoord = mesh.ds->access_vec3v("pcoord");
   for (int p = 0; p < npoints; ++p)
-    pcoord[p] = Ume::SOA_Idx::PtCoord{std::array{coords[p], 0.0, 0.0}};
+    pcoord[p] = Ume::SOA_Idx::PtCoord{std::array<double, 3>{coords[p]}};
 
   std::ofstream os(fname, std::ios::binary);
   if (!os) {
@@ -117,7 +134,7 @@ int main(int argc, char *argv[]) {
     return write_mesh(args[2], args.subspan(3));
   if (args.size() == 3 && std::string_view{args[1]} == "print")
     return print_mesh(args[2]);
-  std::cerr << "Usage: point_mesh write <output.ume> [<x>...]\n"
+  std::cerr << "Usage: point_mesh write <output.ume> [<x>[,<y>,<z>]...]\n"
                "       point_mesh print <input.ume>\n";
   return EXIT_FAILURE;
 }

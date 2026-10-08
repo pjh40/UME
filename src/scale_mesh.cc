@@ -31,13 +31,18 @@
 #include <charconv>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <ranges>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 bool read_mesh(
     char const *const basename, int const mype, Ume::SOA_Idx::Mesh &mesh);
+
+bool is_serial(Ume::SOA_Idx::Mesh const &mesh);
 
 void scale_mesh(int const scale, Ume::SOA_Idx::Mesh &mesh);
 
@@ -70,7 +75,7 @@ int main(int argc, char *argv[]) {
   if (mype == 0)
     std::cout << "Initializing mesh..." << std::endl;
 
-  if (!read_mesh(argv[1], mype, mesh)) {
+  if (!read_mesh(argv[1], mype, mesh) || !is_serial(mesh)) {
     std::cerr << "Aborting." << std::endl;
     return 1;
   }
@@ -129,6 +134,32 @@ bool read_mesh(
   return true;
 }
 
+/*! Whether `mesh` is one whole mesh: one rank, and no ghosts on any entity.
+    stitch() copies each entity's elements in a block after the originals, and
+    has no exchange lists to give the copies; a ghost's copy would also land
+    among the local elements, where nothing expects a ghost.  Says why not on
+    std::cerr when it is not. */
+bool is_serial(Ume::SOA_Idx::Mesh const &mesh) {
+  if (mesh.numpe != 1) {
+    std::cerr << "scale_mesh needs a single-rank mesh; this is rank "
+              << mesh.mype << " of " << mesh.numpe << '.' << std::endl;
+    return false;
+  }
+  std::pair<char const *, Ume::SOA_Idx::Entity const *> const entities[] = {
+      {"points", &mesh.points}, {"edges", &mesh.edges}, {"faces", &mesh.faces},
+      {"sides", &mesh.sides}, {"corners", &mesh.corners},
+      {"zones", &mesh.zones}, {"iotas", &mesh.iotas}};
+  for (auto const &[name, entity] : entities) {
+    if (entity->ghost_local_size() != 0) {
+      std::cerr << "scale_mesh needs a mesh without ghosts; its " << name
+                << " [" << entity->local_size() << ", " << entity->size()
+                << ") are ghosts." << std::endl;
+      return false;
+    }
+  }
+  return true;
+}
+
 //! The extent, max - min, of the point coordinates along `dim`; 0 if none.
 double get_extent(Ume::SOA_Idx::Mesh const &mesh, int const dim) {
   auto const &pcoord = mesh.ds->caccess_vec3v("pcoord");
@@ -140,28 +171,51 @@ double get_extent(Ume::SOA_Idx::Mesh const &mesh, int const dim) {
   return hi - lo;
 }
 
-void double_entity_count(Ume::SOA_Idx::Entity &entity) {
-  int original_local = entity.local_size();
-  int original_total = entity.size();
-  int original_ghost = original_total - original_local;
+//! `index` moved by `delta`, or `index` itself if it is a -1 sentinel.
+constexpr int offset_index(int const index, int const delta) {
+  return index < 0 ? index : index + delta;
+}
 
-  int new_local = original_local * 2;
-  int new_total = original_total * 2;
-  int new_ghost = original_ghost * 2;
-  entity.resize(new_local, new_total, new_ghost);
+/*! Double `entity`, with the second half a copy of the first: its mask and
+    communication type, and each subset extended by the copies of its
+    elements.  The entity has no ghosts (is_serial), so every subset element
+    is local and the copies stay in the subset's local range.  The index maps
+    and coordinates the entity's resize() grows are left to the caller. */
+void double_entity_count(Ume::SOA_Idx::Entity &entity) {
+  assert(entity.ghost_local_size() == 0);
+  int const original_total = entity.size();
+  entity.resize(original_total * 2, original_total * 2, 0);
+  std::ranges::copy_n(entity.mask.begin(), original_total,
+      entity.mask.begin() + original_total);
+  std::ranges::copy_n(entity.comm_type.begin(), original_total,
+      entity.comm_type.begin() + original_total);
+
+  for (auto &subset : entity.subsets) {
+    std::vector<int> elements;
+    elements.reserve(subset.elements.size());
+    std::ranges::transform(subset.elements, std::back_inserter(elements),
+        [original_total](
+            int const e) { return offset_index(e, original_total); });
+    subset.elements.insert(
+        subset.elements.end(), elements.begin(), elements.end());
+    std::vector<short> const mask{subset.mask};
+    subset.mask.insert(subset.mask.end(), mask.begin(), mask.end());
+    subset.lsize *= 2;
+  }
 }
 
 void update_coords(Ume::DS_Types::VEC3V_T &coords, const int iter_start,
     const int iter_end, const double delta, const int dim) {
   for (int c = iter_start; c < iter_end; ++c) {
-    coords[c][dim] = coords[c - iter_start][dim] + delta;
+    coords[c] = coords[c - iter_start];
+    coords[c][dim] += delta;
   }
 }
 
 void update_entity(Ume::DS_Types::INTV_T &map, const int iter_start,
     const int iter_end, const int delta) {
   for (int e = iter_start; e < iter_end; ++e) {
-    map[e] = map[e - iter_start] + delta;
+    map[e] = offset_index(map[e - iter_start], delta);
   }
 }
 

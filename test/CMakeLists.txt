@@ -178,8 +178,8 @@ if(UNIX)
     TIMEOUT 90)
 endif()
 
-# Writes a one-partition mesh of points at (x, 0, 0), or prints the points of
-# one; the stitch tests below use it on both sides of scale_mesh.
+# Writes a one-partition mesh of points, or prints the points of one; the
+# stitch tests below use it on both sides of scale_mesh.
 add_executable(point_mesh point_mesh.cc)
 target_link_libraries(point_mesh PRIVATE Ume)
 target_compile_definitions(point_mesh PRIVATE ${COMMON_COMPILE_DEFINITIONS})
@@ -188,9 +188,11 @@ target_compile_definitions(point_mesh PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 # mesh's x extent.  The extent was taken as the largest x, which is right
 # only when the smallest is 0: on [-1, 0] the copy landed on its original, and
 # on [1, 3] it left a gap of 1.  Each test writes the mesh on the given
-# coordinates, scales it, and matches every point of the result: all of an
-# original, and the x of a copy (scale_mesh sets only the stitched component
-# of a copied point; the other two are whatever the resize left there).
+# coordinates, scales it, and matches every point of the result.  A copy
+# keeps its original's y and z: scale_mesh once set only the stitched
+# component of a copied point and left the other two at whatever the resize
+# put there, which a mesh with every point at y = z = 0 could not show and
+# the off_axis mesh does.
 function(add_scale_mesh_stitch_test name expected)
   set(_basename ${_scale_mesh_dir}/${name})
   add_test(NAME scale_mesh_write_${name}_mesh
@@ -211,13 +213,121 @@ function(add_scale_mesh_stitch_test name expected)
 endfunction()
 
 set(_p "[\r\n]+point")
-set(_yz "[^\r\n]*")
 add_scale_mesh_stitch_test(negative
-  "point 0: -1 0 0${_p} 1: 0 0 0${_p} 2: 0 ${_yz}${_p} 3: 1 ${_yz}[\r\n]*"
+  "point 0: -1 0 0${_p} 1: 0 0 0${_p} 2: 0 0 0${_p} 3: 1 0 0[\r\n]*"
   -1 0)
 add_scale_mesh_stitch_test(positive
-  "point 0: 1 0 0${_p} 1: 3 0 0${_p} 2: 3 ${_yz}${_p} 3: 5 ${_yz}[\r\n]*"
+  "point 0: 1 0 0${_p} 1: 3 0 0${_p} 2: 3 0 0${_p} 3: 5 0 0[\r\n]*"
   1 3)
+add_scale_mesh_stitch_test(off_axis
+  "point 0: 0 1 2${_p} 1: 1 -3 0.5${_p} 2: 1 1 2${_p} 3: 2 -3 0.5[\r\n]*"
+  0,1,2 1,-3,0.5)
+
+# Writes a one-partition mesh with every entity, or prints the entity data of
+# one; the tests below use it on both sides of scale_mesh.
+add_executable(entity_mesh entity_mesh.cc)
+target_link_libraries(entity_mesh PRIVATE Ume)
+target_compile_definitions(entity_mesh PRIVATE ${COMMON_COMPILE_DEFINITIONS})
+
+# The stitched copy of each entity has to carry its original's mask,
+# communication type and subsets, and its index maps have to keep the -1
+# sentinels.  scale_mesh copied only the index maps and the coordinates: the
+# copied half had mask 0, which every kernel skips, and no subsets, and the
+# offset turned each sentinel into the original's last entity: a boundary
+# face's missing second zone, `m:f>z2 == -1`, became a zone of the original.
+# The expected lines are entity_mesh's mesh doubled along x by hand.
+set(_entity_lines
+  "points lsize 4 size 4"
+  "points mask: 1 -1 1 -1"
+  "points comm_type: 1 2 1 2"
+  "points subset corner lsize 2 elements: 1 3 mask: 3 3"
+  "edges lsize 2 size 2"
+  "edges mask: 1 1"
+  "edges comm_type: 1 1"
+  "faces lsize 6 size 6"
+  "faces mask: 1 -1 1 1 -1 1"
+  "faces comm_type: 1 2 3 1 2 3"
+  "faces subset boundary lsize 4 elements: 1 2 4 5 mask: -1 -2 -1 -2"
+  "sides lsize 4 size 4"
+  "sides mask: 1 -1 1 -1"
+  "sides comm_type: 1 2 1 2"
+  "corners lsize 4 size 4"
+  "corners mask: 1 -1 1 -1"
+  "corners comm_type: 1 2 1 2"
+  "zones lsize 4 size 4"
+  "zones mask: 1 -1 1 -1"
+  "zones comm_type: 1 2 1 2"
+  "zones subset inner lsize 2 elements: 0 2 mask: 1 1"
+  "zones subset all lsize 4 elements: 0 1 2 3 mask: 1 -1 1 -1"
+  "iotas lsize 2 size 2"
+  "iotas mask: 1 1"
+  "iotas comm_type: 1 1"
+  "m:e>p1: 0 2"
+  "m:e>p2: 1 3"
+  "m:f>z1: 0 0 1 2 2 3"
+  "m:f>z2: 1 -1 -1 3 -1 -1"
+  "m:s>z: 0 1 2 3"
+  "m:s>p1: 0 1 2 3"
+  "m:s>p2: 1 0 3 2"
+  "m:s>e: 0 0 1 1"
+  "m:s>f: 0 2 3 5"
+  "m:s>c1: 0 1 2 3"
+  "m:s>c2: 1 0 3 2"
+  "m:s>s2: 1 0 3 2"
+  "m:s>s3: 0 1 2 3"
+  "m:s>s4: 1 0 3 2"
+  "m:s>s5: 1 -1 3 -1"
+  "m:c>p: 0 1 2 3"
+  "m:c>z: 0 1 2 3"
+  "m:a>z: 1 3"
+  "m:a>f: 2 5"
+  "m:a>p: 1 3"
+  "m:a>e: 0 1"
+  "m:a>s: 1 3")
+string(JOIN "[\r\n]+" _entity_expected ${_entity_lines})
+add_test(NAME scale_mesh_write_entity_mesh
+  COMMAND entity_mesh write ${_scale_mesh_dir}/entities.00000.ume)
+set_tests_properties(scale_mesh_write_entity_mesh PROPERTIES
+  FIXTURES_SETUP scale_mesh_entity_input)
+add_test(NAME scale_mesh_stitch_entities
+  COMMAND scale_mesh ${_scale_mesh_dir}/entities 2)
+set_tests_properties(scale_mesh_stitch_entities PROPERTIES
+  FIXTURES_REQUIRED scale_mesh_entity_input
+  FIXTURES_SETUP scale_mesh_entity_output
+  PASS_REGULAR_EXPRESSION "Done\\."
+  FAIL_REGULAR_EXPRESSION "Aborting\\."
+  TIMEOUT 90)
+add_test(NAME scale_mesh_stitched_entities
+  COMMAND entity_mesh print ${_scale_mesh_dir}/entities.00002.00000.ume)
+set_tests_properties(scale_mesh_stitched_entities PROPERTIES
+  FIXTURES_REQUIRED scale_mesh_entity_output
+  PASS_REGULAR_EXPRESSION "^${_entity_expected}[\r\n]*$")
+
+# scale_mesh stitches a single-rank mesh without ghosts and has to refuse any
+# other: a partition of a larger mesh, or a mesh with ghosts, whose copies
+# would land among the local entities.  It went on and wrote a mesh whose
+# copied half had no exchange lists.  scale_mesh_stitch_entities, the same
+# mesh with one rank and no ghosts, is the control.
+foreach(_refused IN ITEMS numpe ghost)
+  if(_refused STREQUAL "numpe")
+    set(_flag --numpe=2)
+    set(_message "scale_mesh needs a single-rank mesh\\; this is rank 0 of 2")
+  else()
+    set(_flag --ghost-zone)
+    set(_message "scale_mesh needs a mesh without ghosts\\; its zones \\[2, 3\\) are ghosts")
+  endif()
+  add_test(NAME scale_mesh_write_${_refused}_mesh
+    COMMAND entity_mesh write ${_scale_mesh_dir}/${_refused}.00000.ume ${_flag})
+  set_tests_properties(scale_mesh_write_${_refused}_mesh PROPERTIES
+    FIXTURES_SETUP scale_mesh_${_refused}_input)
+  add_test(NAME scale_mesh_refuses_${_refused}
+    COMMAND scale_mesh ${_scale_mesh_dir}/${_refused} 2)
+  set_tests_properties(scale_mesh_refuses_${_refused} PROPERTIES
+    FIXTURES_REQUIRED scale_mesh_${_refused}_input
+    PASS_REGULAR_EXPRESSION "${_message}\\.[\r\n]+Aborting\\."
+    FAIL_REGULAR_EXPRESSION "Done\\."
+    TIMEOUT 90)
+endforeach()
 
 # The scale factor has to be a whole positive power of 2.  atoi read "1x" as
 # 1 and scaled by it; it read the most negative int as itself, which the
