@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cassert>
 #include <charconv>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -51,6 +52,9 @@ bool test_point_gathscat(Mesh &mesh);
 void check_gradzatz_diffs(Mesh const &mesh, int const &centered_zone_index,
     VEC3V_T const &zgrad, VEC3V_T const &zgrad_invert, VEC3V_T const &pgrad,
     VEC3V_T const &pgrad_invert);
+void report_gradient_mismatches(int const mype,
+    Ume::SOA_Idx::Entity const &entity, char const tag, std::string_view label,
+    VEC3V_T const &grad, VEC3V_T const &grad_invert, double const tol);
 
 int main(int argc, char *argv[]) {
   /* Initialize MPI and instantiate the MPI Transport. */
@@ -60,14 +64,51 @@ int main(int argc, char *argv[]) {
    * after the call to MPI_Init for best performance. */
   Ume::initialize(argc, argv);
 
+  constexpr std::string_view usage{"Usage: ume_mpi <basename> [-i <count>]"};
+
   /* After Ume::initialize, which takes argc by reference and strips the
      --kokkos-* arguments: `ume_mpi --kokkos-num-threads=4` has a basename
      before that call and none after it. */
   if (argc < 2) {
     if (comm.pe() == 0)
-      std::cerr << "Usage: ume_mpi <basename> [-i <count>]" << std::endl;
+      std::cerr << usage << std::endl;
     comm.abort("no mesh basename was given");
     return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
+  }
+
+  /* Everything after the basename has to be "-i <count>".  Checked before the
+     mesh is read, so that a mistyped command line fails before a read that can
+     take minutes rather than after it. */
+  size_t ic = 1; // iteration count when -i is not given
+  if (argc > 2) {
+    std::string_view const flag{argv[2]};
+    std::string problem;
+    if (flag != "-i")
+      problem = std::format("unexpected argument \"{}\"", flag);
+    else if (argc == 3)
+      problem = "-i needs an iteration count";
+    else if (argc > 4)
+      problem = std::format("unexpected argument \"{}\"", argv[4]);
+    if (!problem.empty()) {
+      if (comm.pe() == 0)
+        std::cerr << "ume_mpi: " << problem << '\n' << usage << std::endl;
+      comm.abort("invalid arguments");
+      return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
+    }
+
+    /* from_chars into a size_t refuses a sign, so "-1" is an error rather
+       than SIZE_MAX iterations, and the whole argument has to be the number. */
+    std::string_view const arg{argv[3]};
+    auto const [end, ec] =
+        std::from_chars(arg.data(), arg.data() + arg.size(), ic);
+    if (ec != std::errc{} || end != arg.data() + arg.size()) {
+      if (comm.pe() == 0)
+        std::cerr << "ume_mpi: the iteration count after -i has to be a "
+                     "non-negative integer, got \""
+                  << arg << '"' << std::endl;
+      comm.abort("invalid iteration count");
+      return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
+    }
   }
 
   /* Create a mesh instance and attach the communicator to the mesh. */
@@ -83,23 +124,6 @@ int main(int argc, char *argv[]) {
   if (!read_mesh(argv[1], comm.pe(), mesh)) {
     comm.abort("this rank could not read its mesh file");
     return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
-  }
-
-  size_t ic = 1; // set iteration count to 1 for default
-  if (argc > 3 && std::string(argv[2]) == "-i") {
-    /* from_chars into a size_t refuses a sign, so "-1" is an error rather
-       than SIZE_MAX iterations, and the whole argument has to be the number. */
-    std::string_view const arg{argv[3]};
-    auto const [end, ec] =
-        std::from_chars(arg.data(), arg.data() + arg.size(), ic);
-    if (ec != std::errc{} || end != arg.data() + arg.size()) {
-      if (comm.pe() == 0)
-        std::cerr << "ume_mpi: the iteration count after -i has to be a "
-                     "non-negative integer, got \""
-                  << arg << '"' << std::endl;
-      comm.abort("invalid iteration count");
-      return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
-    }
   }
 
   /* This allows us to attach a debugger to a single rank specified in the
@@ -327,37 +351,11 @@ void check_gradzatz_diffs(Mesh const &mesh, int const &centered_zone_index,
     VEC3V_T const &pgrad_invert) {
   auto const &kztyp = mesh.zones.mask;
 
-  double tol = 1e-6;
-
-  if (zgrad != zgrad_invert) {
-      for (int z = 0; z < mesh.zones.size(); ++z) {
-        // Compute the difference between zone gradient from original and inverted algorithm
-        auto diff = zgrad[z] - zgrad_invert[z];
-        bool cwise = std::abs(diff[0])> tol && std::abs(diff[1])> tol && std::abs(diff[2])> tol;
-        bool l2_norm = (std::sqrt(diff[0]*diff[0] + diff[1]*diff[1] + diff[2]*diff[2])) > tol;
-        // If the absolute difference of all components or 
-        // L2 norm of the difference is greater than defined tolerance then results mismatch
-        if (cwise || l2_norm) {
-          std::cout << "PE" << mesh.mype << " zgrad != zgrad_invert" << " Z" << z << " " 
-                  << mesh.zones.mask[z] << ": " << zgrad[z]  << " vs. " << zgrad_invert[z] << "\n";
-        }
-    }
-  }
-
-  if (pgrad != pgrad_invert) {
-      for (int p = 0; p < mesh.points.size(); ++p) {
-        // Compute the difference between point gradient from original and inverted algorithm
-        auto diff = pgrad[p] - pgrad_invert[p];
-        bool cwise = std::abs(diff[0])> tol && std::abs(diff[1])> tol && std::abs(diff[2])> tol;
-        bool l2_norm = (std::sqrt(diff[0]*diff[0] + diff[1]*diff[1] + diff[2]*diff[2])) > tol;
-        // If the absolute difference of all components or 
-        // L2 norm of the difference is greater than defined tolerance then results mismatch
-        if (cwise || l2_norm) {
-          std::cout << "PE" << mesh.mype << " pgrad != pgrad_invert" << " P" << p << " " 
-          << mesh.points.mask[p] << ": " << pgrad[p] << " vs. " << pgrad_invert[p] << "\n";
-        }
-      }
-  }
+  constexpr double tol = 1e-6;
+  report_gradient_mismatches(mesh.mype, mesh.zones, 'Z',
+      "zgrad != zgrad_invert", zgrad, zgrad_invert, tol);
+  report_gradient_mismatches(mesh.mype, mesh.points, 'P',
+      "pgrad != pgrad_invert", pgrad, pgrad_invert, tol);
 
   auto const &z2pz = mesh.ds->caccess_intrr("m:z>pz");
   auto const &z2p = mesh.ds->caccess_intrr("m:z>p");
@@ -394,5 +392,23 @@ void check_gradzatz_diffs(Mesh const &mesh, int const &centered_zone_index,
     std::cout << "PE" << mesh.mype << " pt diff " << diff.size() << " found "
               << grad_points.size() << " expected "
               << z2p.size(centered_zone_index) << '\n';
+  }
+}
+
+/* Print each element of `entity` whose two gradients differ by more than `tol`
+   in the L2 norm.  Any one component off by more than `tol` puts the norm past
+   it, so a component-wise test would add nothing.  A NaN difference compares
+   false and is not reported. */
+void report_gradient_mismatches(int const mype,
+    Ume::SOA_Idx::Entity const &entity, char const tag, std::string_view label,
+    VEC3V_T const &grad, VEC3V_T const &grad_invert, double const tol) {
+  if (grad == grad_invert)
+    return;
+  for (int i = 0; i < entity.size(); ++i) {
+    if (Ume::vectormag(grad[i] - grad_invert[i]) > tol) {
+      std::cout << "PE" << mype << ' ' << label << ' ' << tag << i << ' '
+                << entity.mask[i] << ": " << grad[i] << " vs. "
+                << grad_invert[i] << '\n';
+    }
   }
 }

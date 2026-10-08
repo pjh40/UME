@@ -537,11 +537,35 @@ if(TARGET ume_mpi)
       "-DEXPECT=Checking gradient result.*Done\\."
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
+  # Everything after the basename has to be "-i <count>".  An -i with no count
+  # and an argument other than -i ran with one iteration, and anything after
+  # the count was ignored; all exited 0, and each has to take the job down with
+  # the usage line.
+  # ume_mpi_iteration_count above is the control.
+  add_test(NAME ume_mpi_missing_iteration_count
+    COMMAND ${CMAKE_COMMAND}
+      "-DARGS=lower-interior$<SEMICOLON>-i"
+      "-DEXPECT=-i needs an iteration count.*Usage: ume_mpi <basename>.*Transport::abort: invalid arguments"
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_unknown_argument
+    COMMAND ${CMAKE_COMMAND}
+      "-DARGS=lower-interior$<SEMICOLON>-n$<SEMICOLON>2"
+      "-DEXPECT=unexpected argument \"-n\".*Usage: ume_mpi <basename>.*Transport::abort: invalid arguments"
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_argument_after_iteration_count
+    COMMAND ${CMAKE_COMMAND}
+      "-DARGS=lower-interior$<SEMICOLON>-i$<SEMICOLON>2$<SEMICOLON>extra"
+      "-DEXPECT=unexpected argument \"extra\".*Usage: ume_mpi <basename>.*Transport::abort: invalid arguments"
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
   set_tests_properties(
     ume_mpi_no_interior_zone ume_mpi_interior_zones_in_lower_half
     ume_mpi_long_basename ume_mpi_truncated_mesh
     ume_mpi_negative_iteration_count ume_mpi_trailing_garbage_iteration_count
-    ume_mpi_iteration_count PROPERTIES
+    ume_mpi_iteration_count ume_mpi_missing_iteration_count
+    ume_mpi_unknown_argument ume_mpi_argument_after_iteration_count PROPERTIES
     FIXTURES_REQUIRED ume_mpi_zone_mask_meshes
     TIMEOUT 90)
 endif()
