@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <numeric>
 #include <random>
+#include <ranges>
 #include <vector>
 
 using Ume::SOA_Idx::Mesh;
@@ -334,4 +335,111 @@ TEST_CASE("zone and face centroids count every point, whichever thread "
     REQUIRE(fcoord.size() == face_reference.size());
     CHECK(count_wrong_centroids(fcoord, face_reference) == 0);
   }
+}
+
+namespace {
+
+/* The indices `range` yields, in order. */
+std::vector<int> indices_of(std::ranges::common_range auto const &range) {
+  return {std::ranges::begin(range), std::ranges::end(range)};
+}
+
+/* A mesh with no entities in it, for the index range tests to resize one
+   entity of. */
+struct Bare_Mesh {
+  Ume::Comm::Dummy_Transport transport;
+  Mesh mesh;
+  Bare_Mesh() {
+    mesh.comm = &transport;
+    mesh.ivtag = UME_VERSION_2;
+    mesh.version_header = true;
+    mesh.mype = 0;
+    mesh.numpe = 1;
+    mesh.geo = Mesh::CARTESIAN;
+    mesh.dump_iotas = false;
+    Ume::SOA_Idx::Entity *const entities[] = {&mesh.points, &mesh.edges,
+        &mesh.faces, &mesh.zones, &mesh.corners, &mesh.sides, &mesh.iotas};
+    for (Ume::SOA_Idx::Entity *e : entities)
+      e->resize(0, 0, 0);
+  }
+};
+
+} // namespace
+
+/* The index ranges are half-open: every element of an Entity is in exactly
+   one of local_indices() and ghost_indices(), and all_indices() is their
+   concatenation.  The sizes are checked before the contents, so that a range
+   whose bound lies below its start fails rather than iterates. */
+TEST_CASE("entity index ranges cover every element", "[mesh][entity]") {
+  Bare_Mesh bare;
+  auto &points = bare.mesh.points;
+  points.resize(5, 8, 3);
+
+  std::vector<int> const every_point{0, 1, 2, 3, 4, 5, 6, 7};
+  REQUIRE(std::ranges::size(points.all_indices()) == 8);
+  CHECK(indices_of(points.all_indices()) == every_point);
+  REQUIRE(std::ranges::size(points.local_indices()) == 5);
+  CHECK(indices_of(points.local_indices()) == std::vector<int>{0, 1, 2, 3, 4});
+  REQUIRE(std::ranges::size(points.ghost_indices()) == 3);
+  CHECK(indices_of(points.ghost_indices()) == std::vector<int>{5, 6, 7});
+  CHECK(points.ghost_size() == 3);
+  REQUIRE(std::ranges::size(points.ghost_indices_offset()) == 3);
+  CHECK(indices_of(points.ghost_indices_offset()) == std::vector<int>{0, 1, 2});
+
+  /* Positive control: the closed-interval bound the ranges used to have,
+     `size() - 1`, drops the last element, and the comparison sees it. */
+  CHECK(
+      indices_of(std::ranges::iota_view{0, points.size() - 1}) != every_point);
+}
+
+/* An empty Entity -- an empty rank's, say -- yields no indices at all. */
+TEST_CASE(
+    "entity index ranges are empty on an empty entity", "[mesh][entity]") {
+  Bare_Mesh bare;
+  auto &points = bare.mesh.points;
+  REQUIRE(points.size() == 0);
+
+  CHECK(std::ranges::size(points.all_indices()) == 0);
+  CHECK(points.all_indices().empty());
+  CHECK(std::ranges::size(points.local_indices()) == 0);
+  CHECK(points.local_indices().empty());
+  CHECK(std::ranges::size(points.ghost_indices()) == 0);
+  CHECK(points.ghost_indices().empty());
+  CHECK(points.ghost_size() == 0);
+  CHECK(std::ranges::size(points.ghost_indices_offset()) == 0);
+  CHECK(points.ghost_indices_offset().empty());
+
+  /* Positive control: one local and one ghost element make every range
+     non-empty, so the checks above see the entity's size. */
+  points.resize(1, 2, 1);
+  CHECK(indices_of(points.all_indices()) == std::vector<int>{0, 1});
+  CHECK(indices_of(points.local_indices()) == std::vector<int>{0});
+  CHECK(indices_of(points.ghost_indices()) == std::vector<int>{1});
+  CHECK(points.ghost_size() == 1);
+  CHECK(indices_of(points.ghost_indices_offset()) == std::vector<int>{0});
+}
+
+/* An Entity with no ghosts has no ghost indices, offset or not; a loop over
+   ghost_indices_offset() indexing the ghost arrays (sized by resize()'s ghost
+   argument, here zero) must not run. */
+TEST_CASE(
+    "entity ghost ranges are empty on a ghost-free entity", "[mesh][entity]") {
+  Bare_Mesh bare;
+  auto &points = bare.mesh.points;
+  points.resize(4, 4, 0);
+  REQUIRE(points.ghost_mask.empty());
+
+  REQUIRE(std::ranges::size(points.all_indices()) == 4);
+  CHECK(indices_of(points.all_indices()) == std::vector<int>{0, 1, 2, 3});
+  CHECK(indices_of(points.local_indices()) == std::vector<int>{0, 1, 2, 3});
+  CHECK(points.ghost_indices().empty());
+  CHECK(points.ghost_size() == 0);
+  CHECK(std::ranges::size(points.ghost_indices_offset()) == 0);
+  CHECK(points.ghost_indices_offset().empty());
+
+  /* Positive control: a single ghost makes both ghost ranges non-empty. */
+  points.resize(4, 5, 1);
+  CHECK(indices_of(points.ghost_indices()) == std::vector<int>{4});
+  CHECK(points.ghost_size() == 1);
+  CHECK(indices_of(points.ghost_indices_offset()) == std::vector<int>{0});
 }
