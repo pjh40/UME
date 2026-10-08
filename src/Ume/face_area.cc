@@ -49,27 +49,19 @@ void calc_face_area(Mesh &mesh, DBLV_T &face_area) {
   Kokkos::View<const int *, HostSpace> h_face_comm_type(
       &face_comm_type[0], face_comm_type.size());
 
-  auto d_face_area = create_mirror_view(DevExecMemSpace(), h_face_area);
-  auto d_s_to_f_map = create_mirror_view(DevExecMemSpace(), h_s_to_f_map);
-  auto d_s_to_s2_map = create_mirror_view(DevExecMemSpace(), h_s_to_s2_map);
-  auto d_surz = create_mirror_view(DevExecMemSpace(), h_surz);
-  auto d_side_tag = create_mirror_view(DevExecMemSpace(), h_side_tag);
-  auto d_side_type = create_mirror_view(DevExecMemSpace(), h_side_type);
+  auto d_face_area =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_face_area);
+  auto d_s_to_f_map =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_s_to_f_map);
+  auto d_s_to_s2_map =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_s_to_s2_map);
+  auto d_surz = Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_surz);
+  auto d_side_tag =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_side_tag);
+  auto d_side_type =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_side_type);
   auto d_face_comm_type =
-      create_mirror_view(DevExecMemSpace(), h_face_comm_type);
-
-#if !defined(UME_SERIAL)
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || \
-    defined(KOKKOS_ENABLE_SYCL)
-  Kokkos::deep_copy(d_face_area, h_face_area);
-  Kokkos::deep_copy(d_s_to_f_map, h_s_to_f_map);
-  Kokkos::deep_copy(d_s_to_s2_map, h_s_to_s2_map);
-  Kokkos::deep_copy(d_surz, h_surz);
-  Kokkos::deep_copy(d_side_tag, h_side_tag);
-  Kokkos::deep_copy(d_side_type, h_side_type);
-  Kokkos::deep_copy(d_face_comm_type, h_face_comm_type);
-#endif
-#endif
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_face_comm_type);
 
   Kokkos::parallel_for(
       "face_area", Kokkos::RangePolicy<DevExecSpace>(0, sl),
@@ -89,13 +81,7 @@ void calc_face_area(Mesh &mesh, DBLV_T &face_area) {
         }
       });
 
-#if !defined(UME_SERIAL)
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || \
-    defined(KOKKOS_ENABLE_SYCL)
-  Kokkos::fence();
   Kokkos::deep_copy(h_face_area, d_face_area);
-#endif
-#endif
 
   mesh.faces.scatter(face_area);
 }

@@ -68,38 +68,31 @@ void gradzatz(Ume::SOA_Idx::Mesh &mesh, DBLV_T const &zone_field,
       &point_type[0], point_type.size());
 
   auto d_point_gradient =
-      create_mirror_view(DevExecMemSpace(), h_point_gradient);
-  auto d_c_to_z_map = create_mirror_view(DevExecMemSpace(), h_c_to_z_map);
-  auto d_corner_volume = create_mirror_view(DevExecMemSpace(), h_corner_volume);
-  auto d_zone_field = create_mirror_view(DevExecMemSpace(), h_zone_field);
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_point_gradient);
+  auto d_c_to_z_map =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_c_to_z_map);
+  auto d_corner_volume =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_corner_volume);
+  auto d_zone_field =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_zone_field);
 
-  auto d_c_to_p_map = create_mirror_view(DevExecMemSpace(), h_c_to_p_map);
-  auto d_corner_type = create_mirror_view(DevExecMemSpace(), h_corner_type);
-  auto d_zone_gradient = create_mirror_view(DevExecMemSpace(), h_zone_gradient);
-  auto d_zone_volume = create_mirror_view(DevExecMemSpace(), h_zone_volume);
+  auto d_c_to_p_map =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_c_to_p_map);
+  auto d_corner_type =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_corner_type);
+  auto d_zone_gradient =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_zone_gradient);
+  auto d_zone_volume =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_zone_volume);
 
-  auto d_point_type = create_mirror_view(DevExecMemSpace(), h_point_type);
-  auto d_point_volume = create_mirror_view(DevExecMemSpace(), h_point_volume);
-  auto d_point_normal = create_mirror_view(DevExecMemSpace(), h_point_normal);
-  auto d_csurf = create_mirror_view(DevExecMemSpace(), h_csurf);
-
-#if !defined(UME_SERIAL)
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || \
-    defined(KOKKOS_ENABLE_SYCL)
-  Kokkos::deep_copy(d_point_gradient, h_point_gradient);
-  Kokkos::deep_copy(d_c_to_z_map, h_c_to_z_map);
-  Kokkos::deep_copy(d_corner_volume, h_corner_volume);
-  Kokkos::deep_copy(d_zone_field, h_zone_field);
-  Kokkos::deep_copy(d_c_to_p_map, h_c_to_p_map);
-  Kokkos::deep_copy(d_corner_type, h_corner_type);
-  Kokkos::deep_copy(d_zone_gradient, h_zone_gradient);
-  Kokkos::deep_copy(d_zone_volume, h_zone_volume);
-  Kokkos::deep_copy(d_point_type, h_point_type);
-  Kokkos::deep_copy(d_point_volume, h_point_volume);
-  Kokkos::deep_copy(d_point_normal, h_point_normal);
-  Kokkos::deep_copy(d_csurf, h_csurf);
-#endif
-#endif
+  auto d_point_type =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_point_type);
+  auto d_point_volume =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_point_volume);
+  auto d_point_normal =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_point_normal);
+  auto d_csurf =
+      Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_csurf);
 
   Kokkos::parallel_for(
       "gradzatz-1", Kokkos::RangePolicy<DevExecSpace>(0, cl),
@@ -142,22 +135,11 @@ void gradzatz(Ume::SOA_Idx::Mesh &mesh, DBLV_T const &zone_field,
         }
       });
 
-#if !defined(UME_SERIAL)
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || \
-    defined(KOKKOS_ENABLE_SYCL)
-  Kokkos::fence();
   Kokkos::deep_copy(h_point_gradient, d_point_gradient);
-#endif
-#endif
 
   mesh.points.scatter(point_gradient);
 
-#if !defined(UME_SERIAL)
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || \
-    defined(KOKKOS_ENABLE_SYCL)
   Kokkos::deep_copy(d_point_gradient, h_point_gradient);
-#endif
-#endif
 
   /* Accumulate the zone volume.  Note that we need to allocate a zone field for
      volume, as we are accumulating from corners */
@@ -196,13 +178,7 @@ void gradzatz(Ume::SOA_Idx::Mesh &mesh, DBLV_T const &zone_field,
         }
       });
 
-#if !defined(UME_SERIAL)
-#if defined(KOKKOS_ENABLE_CUDA) || defined(KOKKOS_ENABLE_HIP) || \
-    defined(KOKKOS_ENABLE_SYCL)
-  Kokkos::fence();
   Kokkos::deep_copy(h_zone_gradient, d_zone_gradient);
-#endif
-#endif
 
   mesh.zones.scatter(zone_gradient);
 }
