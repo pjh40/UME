@@ -94,18 +94,26 @@ if(TARGET ume_mpi)
   target_link_libraries(write_zone_mask_mesh PRIVATE Ume)
   target_compile_definitions(write_zone_mask_mesh PRIVATE
     ${COMMON_COMPILE_DEFINITIONS})
-  # The meshes are named relative to their directory: read_mesh() formats
-  # the file name into a fixed 80-character buffer.
   set(_zone_mask_dir ${CMAKE_CURRENT_BINARY_DIR}/zone_mask_meshes)
   file(MAKE_DIRECTORY ${_zone_mask_dir})
+  # ume_mpi_long_basename names its mesh by an absolute basename more than
+  # 112 characters long, whatever the length of the build directory's path:
+  # read_mesh() once formatted the file name into a char[80].
+  string(REPEAT "/long-basename" 8 _long_subdir)
+  set(_long_basename_dir ${_zone_mask_dir}${_long_subdir})
+  file(MAKE_DIRECTORY ${_long_basename_dir})
   add_test(NAME ume_mpi_write_no_zone_mesh
     COMMAND write_zone_mask_mesh no-zones.00000.ume
     WORKING_DIRECTORY ${_zone_mask_dir})
   add_test(NAME ume_mpi_write_lower_interior_mesh
     COMMAND write_zone_mask_mesh lower-interior.00000.ume 1 1 -1 -1
     WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_write_long_basename_mesh
+    COMMAND write_zone_mask_mesh
+      ${_long_basename_dir}/lower-interior.00000.ume 1 1 -1 -1)
   set_tests_properties(
-    ume_mpi_write_no_zone_mesh ume_mpi_write_lower_interior_mesh PROPERTIES
+    ume_mpi_write_no_zone_mesh ume_mpi_write_lower_interior_mesh
+    ume_mpi_write_long_basename_mesh PROPERTIES
     FIXTURES_SETUP ume_mpi_zone_mask_meshes)
 
   add_test(NAME ume_mpi_no_interior_zone
@@ -121,8 +129,15 @@ if(TARGET ume_mpi)
       "-DEXPECT=Checking gradient result.*Done\\."
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_long_basename
+    COMMAND ${CMAKE_COMMAND}
+      -DARGS=${_long_basename_dir}/lower-interior
+      -DEXPECT_SUCCESS=ON
+      "-DEXPECT=Checking gradient result.*Done\\."
+      ${_ume_mpi_check})
   set_tests_properties(
-    ume_mpi_no_interior_zone ume_mpi_interior_zones_in_lower_half PROPERTIES
+    ume_mpi_no_interior_zone ume_mpi_interior_zones_in_lower_half
+    ume_mpi_long_basename PROPERTIES
     FIXTURES_REQUIRED ume_mpi_zone_mask_meshes
     TIMEOUT 90)
 endif()

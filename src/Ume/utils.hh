@@ -18,6 +18,7 @@
 #include <memory>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifndef UME_UTILS_HH
@@ -100,6 +101,12 @@ inline std::string rtrim(const std::string &s) {
 }
 
 inline std::string trim(const std::string &s) { return rtrim(ltrim(s)); }
+
+//! The partition file name "<basename>.<pe>.ume", pe zero-filled to five digits
+std::string mesh_filename(std::string_view basename, int pe);
+//! The scaled partition file name "<basename>.<scale>.<pe>.ume", both fields
+//! zero-filled to five digits
+std::string mesh_filename(std::string_view basename, int pe, int scale);
 
 int init_depth(int const delta);
 void debug_attach_point(int const mype);

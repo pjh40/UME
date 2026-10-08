@@ -13,7 +13,9 @@
   \file Ume/utils.cc
 */
 
+#include "Ume/utils.hh"
 #include <cstdlib>
+#include <format>
 #include <iostream>
 #include <sys/types.h>
 #include <unistd.h>
@@ -46,6 +48,15 @@ void debug_attach_point(int const mype) {
 #ifdef HAVE_MPI
   MPI_Barrier(MPI_COMM_WORLD);
 #endif
+}
+
+std::string mesh_filename(std::string_view const basename, int const pe) {
+  return std::format("{}.{:05d}.ume", basename, pe);
+}
+
+std::string mesh_filename(
+    std::string_view const basename, int const pe, int const scale) {
+  return std::format("{}.{:05d}.{:05d}.ume", basename, scale, pe);
 }
 
 int init_depth(int const delta) {

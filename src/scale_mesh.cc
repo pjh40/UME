@@ -27,9 +27,9 @@
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/utils.hh"
 #include <cassert>
-#include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <string>
 
 bool read_mesh(
     char const *const basename, int const mype, Ume::SOA_Idx::Mesh &mesh);
@@ -99,8 +99,7 @@ int main(int argc, char *argv[]) {
 
 bool read_mesh(
     char const *const basename, int const mype, Ume::SOA_Idx::Mesh &mesh) {
-  char fname[80];
-  sprintf(fname, "%s.%05d.ume", basename, mype);
+  std::string const fname = Ume::mesh_filename(basename, mype);
   std::ifstream is(fname);
   if (!is) {
     std::cerr << "Unable to open file \"" << fname << "\" for reading."
@@ -304,8 +303,7 @@ void scale_mesh(int const scale, Ume::SOA_Idx::Mesh &mesh) {
 
 bool write_mesh(char const *const basename, int const mype, int const scale,
     Ume::SOA_Idx::Mesh &mesh) {
-  char fname[80];
-  sprintf(fname, "%s.%05d.%05d.ume", basename, scale, mype);
+  std::string const fname = Ume::mesh_filename(basename, mype, scale);
   std::ofstream os(fname);
   if (!os) {
     std::cerr << "Unable to open file \"" << fname << "\" for reading."

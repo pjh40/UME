@@ -32,10 +32,10 @@
 #include "Ume/utils.hh"
 #include <algorithm>
 #include <cassert>
-#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <string>
 #include <vector>
 
 using Mesh = Ume::SOA_Idx::Mesh;
@@ -232,8 +232,7 @@ int main(int argc, char *argv[]) {
 }
 
 bool read_mesh(char const *const basename, int const mype, Mesh &mesh) {
-  char fname[80];
-  sprintf(fname, "%s.%05d.ume", basename, mype);
+  std::string const fname = Ume::mesh_filename(basename, mype);
   std::ifstream is(fname);
   if (!is) {
     std::cerr << "Unable to open file \"" << fname << "\" for reading."

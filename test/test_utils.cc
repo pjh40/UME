@@ -86,3 +86,23 @@ TEST_CASE("trim", "[utils]") {
   b = Ume::trim(a);
   REQUIRE(b == "This is a test");
 }
+
+TEST_CASE("mesh_filename with a 200-character basename", "[utils]") {
+  // The drivers formatted these names into a char[80]; a basename this long
+  // overflowed it by more than a hundred bytes.
+  std::string base;
+  for (int i = 0; i < 49; ++i)
+    base += "dir/";
+  base += "mesh";
+  REQUIRE(base.size() == 200);
+
+  REQUIRE(Ume::mesh_filename(base, 7) == base + ".00007.ume");
+  REQUIRE(Ume::mesh_filename(base, 7, 4) == base + ".00004.00007.ume");
+  // Positive controls: the rank, and the order of rank and scale, show up in
+  // the name.
+  REQUIRE(Ume::mesh_filename(base, 8) != Ume::mesh_filename(base, 7));
+  REQUIRE(Ume::mesh_filename(base, 4, 7) == base + ".00007.00004.ume");
+  // A field wider than five digits widens rather than truncates, as %05d did.
+  REQUIRE(Ume::mesh_filename(base, 123456) == base + ".123456.ume");
+  REQUIRE(Ume::mesh_filename(base, 0, 131072) == base + ".131072.00000.ume");
+}
