@@ -96,16 +96,15 @@ bool Points::VAR_point_norm::init_() const {
 
   point_norm.resize(pll, Vec3(0.0));
 
-  Kokkos::View<Vec3 *, HostSpace> h_point_norm_k(&point_norm[0], sl);
+  Kokkos::View<Vec3 *, HostSpace> h_point_norm_k(
+      point_norm.data(), point_norm.size());
   Kokkos::View<const Vec3 *, HostSpace> h_side_surz(
-      &side_surz[0], side_surz.size());
+      side_surz.data(), side_surz.size());
   Kokkos::View<const int *, HostSpace> h_s2p1(s2p1.data(), s2p1.size());
   Kokkos::View<const int *, HostSpace> h_s2p2(s2p2.data(), s2p2.size());
   Kokkos::View<const int *, HostSpace> h_s2s2(s2s2.data(), s2s2.size());
-  Kokkos::View<const short *, HostSpace> h_smask(
-      &smask[0], smask.size());
-  Kokkos::View<const short *, HostSpace> h_pmask(
-      &pmask[0], pmask.size());
+  Kokkos::View<const short *, HostSpace> h_smask(smask.data(), smask.size());
+  Kokkos::View<const short *, HostSpace> h_pmask(pmask.data(), pmask.size());
 
   Kokkos::parallel_for("Var_point_norm", Kokkos::RangePolicy<HostExecSpace>(0, sl),
       [&](const int s) {

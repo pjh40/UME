@@ -66,11 +66,9 @@ bool Zones::VAR_zcoord::init_() const {
 
   std::vector<int> num_zone_pts(zl, 0);
 
-  Kokkos::View<Vec3 *, HostSpace> h_zcoord(&zcoord[0], zcoord.size());
-  Kokkos::View<const Vec3 *, HostSpace> h_pcoord(
-      &pcoord[0], pcoord.size());
-  Kokkos::View<const short *, HostSpace> h_cmask(
-      &cmask[0], cmask.size());
+  Kokkos::View<Vec3 *, HostSpace> h_zcoord(zcoord.data(), zcoord.size());
+  Kokkos::View<const Vec3 *, HostSpace> h_pcoord(pcoord.data(), pcoord.size());
+  Kokkos::View<const short *, HostSpace> h_cmask(cmask.data(), cmask.size());
   Kokkos::View<const int *, HostSpace> h_c2z(c2z.data(), c2z.size());
   Kokkos::View<const int *, HostSpace> h_c2p(c2p.data(), c2p.size());
   Kokkos::View<int *, HostSpace> h_num_zone_pts(
@@ -91,8 +89,7 @@ bool Zones::VAR_zcoord::init_() const {
 
   auto const &zmask{zones().mask};
 
-  Kokkos::View<const short *, HostSpace> h_zmask(
-      &zmask[0], zmask.size());
+  Kokkos::View<const short *, HostSpace> h_zmask(zmask.data(), zmask.size());
 
   Kokkos::parallel_for(
       "VAR_zcoord-2", Kokkos::RangePolicy<HostExecSpace>(0, zl), [&](const int z) {

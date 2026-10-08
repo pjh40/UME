@@ -37,17 +37,17 @@ void calc_face_area(Mesh &mesh, DBLV_T &face_area) {
   INTV_T side_tag(sll, 0);
 
   Kokkos::View<double *, HostSpace> h_face_area(
-      &face_area[0], face_area.size());
+      face_area.data(), face_area.size());
   Kokkos::View<const int *, HostSpace> h_s_to_f_map(
-      &s_to_f_map[0], s_to_f_map.size());
+      s_to_f_map.data(), s_to_f_map.size());
   Kokkos::View<const int *, HostSpace> h_s_to_s2_map(
-      &s_to_s2_map[0], s_to_s2_map.size());
-  Kokkos::View<const Vec3 *, HostSpace> h_surz(&surz[0], surz.size());
-  Kokkos::View<int *, HostSpace> h_side_tag(&side_tag[0], side_tag.size());
+      s_to_s2_map.data(), s_to_s2_map.size());
+  Kokkos::View<const Vec3 *, HostSpace> h_surz(surz.data(), surz.size());
+  Kokkos::View<int *, HostSpace> h_side_tag(side_tag.data(), side_tag.size());
   Kokkos::View<const short *, HostSpace> h_side_type(
-      &side_type[0], side_type.size());
+      side_type.data(), side_type.size());
   Kokkos::View<const int *, HostSpace> h_face_comm_type(
-      &face_comm_type[0], face_comm_type.size());
+      face_comm_type.data(), face_comm_type.size());
 
   auto d_face_area =
       Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_face_area);

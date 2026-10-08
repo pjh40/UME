@@ -72,11 +72,9 @@ bool Faces::VAR_fcoord::init_() const {
 
   std::vector<int> num_face_pts(fl, 0);
 
-  Kokkos::View<Vec3 *, HostSpace> h_fcoord(&fcoord[0], fcoord.size());
-  Kokkos::View<const Vec3 *, HostSpace> h_pcoord(
-      &pcoord[0], pcoord.size());
-  Kokkos::View<const short *, HostSpace> h_smask(
-      &smask[0], smask.size());
+  Kokkos::View<Vec3 *, HostSpace> h_fcoord(fcoord.data(), fcoord.size());
+  Kokkos::View<const Vec3 *, HostSpace> h_pcoord(pcoord.data(), pcoord.size());
+  Kokkos::View<const short *, HostSpace> h_smask(smask.data(), smask.size());
   Kokkos::View<const int *, HostSpace> h_s2f(s2f.data(), s2f.size());
   Kokkos::View<const int *, HostSpace> h_s2p1(s2p1.data(), s2p1.size());
   Kokkos::View<int *, HostSpace> h_num_face_pts(
@@ -96,8 +94,7 @@ bool Faces::VAR_fcoord::init_() const {
       });
   auto const &fmask{faces().mask};
 
-  Kokkos::View<const short *, HostSpace> h_fmask(
-      &fmask[0], fmask.size());
+  Kokkos::View<const short *, HostSpace> h_fmask(fmask.data(), fmask.size());
   Kokkos::parallel_for(
       "VAR_fcoord-2", Kokkos::RangePolicy<HostExecSpace>(0, fl), [&](const int f) {
         if (h_fmask(f)) {

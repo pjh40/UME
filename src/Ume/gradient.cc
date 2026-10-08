@@ -44,28 +44,28 @@ void gradzatz(Ume::SOA_Idx::Mesh &mesh, DBLV_T const &zone_field,
   zone_gradient.assign(mesh.zones.size(), VEC3_T(0.0));
 
   Kokkos::View<Vec3 *, HostSpace> h_point_gradient(
-      &point_gradient[0], point_gradient.size());
+      point_gradient.data(), point_gradient.size());
   Kokkos::View<const int *, HostSpace> h_c_to_z_map(
-      &c_to_z_map[0], c_to_z_map.size());
+      c_to_z_map.data(), c_to_z_map.size());
   Kokkos::View<const double *, HostSpace> h_corner_volume(
-      &corner_volume[0], corner_volume.size());
+      corner_volume.data(), corner_volume.size());
   Kokkos::View<const double *, HostSpace> h_zone_field(
-      &zone_field[0], zone_field.size());
+      zone_field.data(), zone_field.size());
   Kokkos::View<const int *, HostSpace> h_c_to_p_map(
-      &c_to_p_map[0], c_to_p_map.size());
+      c_to_p_map.data(), c_to_p_map.size());
   Kokkos::View<const short *, HostSpace> h_corner_type(
-      &corner_type[0], corner_type.size());
+      corner_type.data(), corner_type.size());
   Kokkos::View<Vec3 *, HostSpace> h_zone_gradient(
-      &zone_gradient[0], zone_gradient.size());
+      zone_gradient.data(), zone_gradient.size());
   Kokkos::View<double *, HostSpace> h_zone_volume(
-      &zone_volume[0], zone_volume.size());
+      zone_volume.data(), zone_volume.size());
   Kokkos::View<const Vec3 *, HostSpace> h_point_normal(
-      &point_normal[0], point_normal.size());
+      point_normal.data(), point_normal.size());
   Kokkos::View<double *, HostSpace> h_point_volume(
-      &point_volume[0], point_volume.size());
-  Kokkos::View<const Vec3 *, HostSpace> h_csurf(&csurf[0], csurf.size());
+      point_volume.data(), point_volume.size());
+  Kokkos::View<const Vec3 *, HostSpace> h_csurf(csurf.data(), csurf.size());
   Kokkos::View<const short *, HostSpace> h_point_type(
-      &point_type[0], point_type.size());
+      point_type.data(), point_type.size());
 
   auto d_point_gradient =
       Kokkos::create_mirror_view_and_copy(DevExecMemSpace(), h_point_gradient);
@@ -211,20 +211,20 @@ void gradzatp_invert(Ume::SOA_Idx::Mesh &mesh, DBLV_T const &zone_field,
   point_gradient.assign(num_points, VEC3_T(0.0));
 
   Kokkos::View<const int *, HostSpace> h_c_to_z_map(
-      &c_to_z_map[0], c_to_z_map.size());
+      c_to_z_map.data(), c_to_z_map.size());
   Kokkos::View<const double *, HostSpace> h_corner_volume(
-      &corner_volume[0], corner_volume.size());
+      corner_volume.data(), corner_volume.size());
   Kokkos::View<double *, HostSpace> h_point_volume(
-      &point_volume[0], point_volume.size());
+      point_volume.data(), point_volume.size());
   Kokkos::View<Vec3 *, HostSpace> h_point_gradient(
-      &point_gradient[0], point_gradient.size());
-  Kokkos::View<const Vec3 *, HostSpace> h_csurf(&csurf[0], csurf.size());
+      point_gradient.data(), point_gradient.size());
+  Kokkos::View<const Vec3 *, HostSpace> h_csurf(csurf.data(), csurf.size());
   Kokkos::View<const double *, HostSpace> h_zone_field(
-      &zone_field[0], zone_field.size());
+      zone_field.data(), zone_field.size());
   Kokkos::View<const Vec3 *, HostSpace> h_point_normal(
-      &point_normal[0], point_normal.size());
+      point_normal.data(), point_normal.size());
   Kokkos::View<const short *, HostSpace> h_point_type(
-      &point_type[0], point_type.size());
+      point_type.data(), point_type.size());
 
   Kokkos::parallel_for("gradzatp-ivt-1",
       Kokkos::RangePolicy<HostExecSpace>(0, num_local_points),
@@ -275,15 +275,15 @@ void gradzatz_invert(Ume::SOA_Idx::Mesh &mesh, DBLV_T const &zone_field,
   zone_gradient.assign(mesh.zones.size(), VEC3_T(0.0));
 
   Kokkos::View<const short *, HostSpace> h_zone_type(
-      &zone_type[0], zone_type.size());
+      zone_type.data(), zone_type.size());
   Kokkos::View<const double *, HostSpace> h_corner_volume(
-      &corner_volume[0], corner_volume.size());
+      corner_volume.data(), corner_volume.size());
   Kokkos::View<const int *, HostSpace> h_c_to_p_map(
-      &c_to_p_map[0], c_to_p_map.size());
+      c_to_p_map.data(), c_to_p_map.size());
   Kokkos::View<Vec3 *, HostSpace> h_zone_gradient(
-      &zone_gradient[0], zone_gradient.size());
+      zone_gradient.data(), zone_gradient.size());
   Kokkos::View<Vec3 *, HostSpace> h_point_gradient(
-      &point_gradient[0], point_gradient.size());
+      point_gradient.data(), point_gradient.size());
 
   Kokkos::parallel_for("gradzatz-ivt",
       Kokkos::RangePolicy<HostExecSpace>(0, num_local_zones),

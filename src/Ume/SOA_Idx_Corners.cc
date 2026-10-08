@@ -72,12 +72,11 @@ bool Corners::VAR_corner_vol::init_() const {
 
   Kokkos::View<const int *, HostSpace> h_s2c1(s2c1.data(), s2c1.size());
   Kokkos::View<const int *, HostSpace> h_s2c2(s2c2.data(), s2c2.size());
-  Kokkos::View<const short *, HostSpace> h_smask(
-      &smask[0], smask.size());
+  Kokkos::View<const short *, HostSpace> h_smask(smask.data(), smask.size());
   Kokkos::View<double *, HostSpace> h_corner_vol(
-      &corner_vol[0], corner_vol.size());
+      corner_vol.data(), corner_vol.size());
   Kokkos::View<const double *, HostSpace> h_side_vol(
-      &side_vol[0], side_vol.size());
+      side_vol.data(), side_vol.size());
 
   Kokkos::parallel_for("VAR_corner_vol", Kokkos::RangePolicy<HostExecSpace>(0, sl),
       [&](const int s) {
@@ -109,13 +108,15 @@ bool Corners::VAR_corner_csurf::init_() const {
   auto &corner_csurf = mydata_vec3v();
   corner_csurf.assign(cll, Vec3(0.0));
 
-  Kokkos::View<Vec3 *, HostSpace> h_corner_csurf(&corner_csurf[0], sl);
+  /* Indexed by corner, not by side: the loop below runs over sides but writes
+     through m:s>c1 / m:s>c2, so the extent is the corner count. */
+  Kokkos::View<Vec3 *, HostSpace> h_corner_csurf(
+      corner_csurf.data(), corner_csurf.size());
   Kokkos::View<const Vec3 *, HostSpace> h_side_surf(
-      &side_surf[0], side_surf.size());
+      side_surf.data(), side_surf.size());
   Kokkos::View<const int *, HostSpace> h_s2c1(s2c1.data(), s2c1.size());
   Kokkos::View<const int *, HostSpace> h_s2c2(s2c2.data(), s2c2.size());
-  Kokkos::View<const short *, HostSpace> h_smask(
-      &smask[0], smask.size());
+  Kokkos::View<const short *, HostSpace> h_smask(smask.data(), smask.size());
 
   Kokkos::parallel_for("VAR_corner_csurf",
       Kokkos::RangePolicy<HostExecSpace>(0, sl), [&](const int s) {
