@@ -16,6 +16,9 @@
 */
 
 #include "Ume/Comm_Buffers.hh"
+#ifdef HAVE_MPI
+#include "Ume/Comm_MPI.hh"
+#endif
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <numeric>
@@ -76,3 +79,66 @@ TEST_CASE(
   std::vector<double> const packed(buf, buf + 9);
   CHECK(packed == std::vector<double>{1, 2, 3, 4, 5, 6, 7, 8, 9});
 }
+
+#ifdef HAVE_MPI
+namespace {
+
+//! Exchange `neighs` with this rank and check the receives match the sends
+template <class Field>
+void check_exchange_with_self(Comm::MPI &comm, Neighbors const &neighs) {
+  using Elem = typename Field::value_type;
+
+  Field field(8);
+  for (std::size_t i = 0; i < field.size(); ++i)
+    field[i] =
+        Elem(static_cast<typename DS_Type_Info<Field>::base_type>(i + 1));
+
+  Buffers<Field> sends{neighs};
+  Buffers<Field> recvs{neighs};
+  sends.pack(field);
+  comm.exchange(sends, recvs);
+
+  Field received(field.size(), Elem(0));
+  for (auto const &n : neighs)
+    for (int const e : n.elements)
+      // Positive control: only the unpack can make these equal.
+      CHECK_FALSE(received[e] == field[e]);
+  recvs.unpack(received, Op::OVERWRITE);
+  for (auto const &n : neighs)
+    for (int const e : n.elements)
+      CHECK(received[e] == field[e]);
+}
+
+} // namespace
+
+/* MPI_Init can run only once per process, so this is one test case rather
+   than a template test case or sections, which would construct `comm` again.
+   It runs on any number of ranks: every remote is the calling rank itself. */
+TEST_CASE("comm MPI: exchange with empty remotes and map virtual ranks",
+    "[comm][mpi]") {
+  Comm::MPI comm(nullptr, nullptr);
+  int const me = comm.pe();
+
+  /* An empty remote at the end of the list has buf_offset == buf.size(), and
+     one alone has an empty buffer: in both, the remote's start address has to
+     be taken without indexing the buffer. */
+  for (Neighbors const &neighs :
+      {Neighbors{{me, {1, 3}}, {me, {}}}, Neighbors{{me, {}}}}) {
+    check_exchange_with_self<DS_Types::INTV_T>(comm, neighs);
+    check_exchange_with_self<DS_Types::DBLV_T>(comm, neighs);
+    check_exchange_with_self<DS_Types::VEC3V_T>(comm, neighs);
+  }
+
+  /* Every rank contributes one int to the virtual-to-real map.  On one rank
+     any count fits; it takes two or more to see a count of numpe per rank
+     overflow the gathered array. */
+  constexpr int shift = 100;
+  // Positive control: without the map, a virtual PE is taken as a real one.
+  CHECK(comm.translate_pe(me + shift) == me + shift);
+  comm.set_virtual_rank(me + shift);
+  for (int r = 0; r < comm.numpe(); ++r)
+    CHECK(comm.translate_pe(r + shift) == r);
+
+  comm.stop();
+}
+#endif

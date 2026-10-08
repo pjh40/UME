@@ -21,6 +21,10 @@ add_executable(ume_tests
 target_link_libraries(ume_tests PRIVATE
   Ume Catch2::Catch2WithMain)
 
+# HAVE_MPI, among others: test_comm_buffers.cc exchanges through Comm::MPI when
+# the library was built with it.
+target_compile_definitions(ume_tests PRIVATE ${COMMON_COMPILE_DEFINITIONS})
+
 catch_discover_tests(ume_tests)
 
 # UME GPU-enabled tests
