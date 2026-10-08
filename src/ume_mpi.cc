@@ -241,6 +241,11 @@ bool read_mesh(char const *const basename, int const mype, Mesh &mesh) {
   }
   mesh.read(is);
   is.close();
+  if (!is) {
+    std::cerr << "Unable to read a mesh from file \"" << fname << "\"."
+              << std::endl;
+    return false;
+  }
   return true;
 }
 

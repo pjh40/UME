@@ -110,6 +110,11 @@ bool read_mesh(
   }
   mesh.read(is);
   is.close();
+  if (!is) {
+    std::cerr << "Unable to read a mesh from file \"" << fname << "\"."
+              << std::endl;
+    return false;
+  }
   return true;
 }
 
@@ -312,5 +317,10 @@ bool write_mesh(char const *const basename, int const mype, int const scale,
   }
   mesh.write(os);
   os.close();
+  if (!os) {
+    std::cerr << "Unable to write a mesh to file \"" << fname << "\"."
+              << std::endl;
+    return false;
+  }
   return true;
 }

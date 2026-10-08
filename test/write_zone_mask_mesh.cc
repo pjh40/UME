@@ -15,16 +15,21 @@
   Writes a single-rank Ume binary mesh that has local zones with the masks
   given on the command line and no other entities:
 
-      write_zone_mask_mesh <output.ume> [<zone mask>...]
+      write_zone_mask_mesh [--drop-last=<bytes>] <output.ume> [<zone mask>...]
 
   With no masks the mesh is empty, as a rank of an over-decomposed mesh is.
   The ume_mpi tests use these to place the interior zones (mask >= 1) where the
   driver's choice of a zone to seed its gradient has to find them.
+
+  --drop-last cuts that many bytes off the end of the file once it is written,
+  for the tests of a truncated mesh file.
 */
 
 #include "Ume/SOA_Idx_Mesh.hh"
 #include <charconv>
+#include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -45,12 +50,38 @@ std::optional<short> parse_mask(std::string_view const text) {
   return value;
 }
 
+/* The byte count in `text`, or nothing if it is not entirely one. */
+std::optional<std::uintmax_t> parse_count(std::string_view const text) {
+  std::uintmax_t value{};
+  auto const [end, ec] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  if (ec != std::errc{} || end != text.data() + text.size())
+    return std::nullopt;
+  return value;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
-  std::span<char *const> const args(argv, static_cast<std::size_t>(argc));
+  std::span<char *const> args(argv, static_cast<std::size_t>(argc));
+  std::uintmax_t drop_last{0};
+  constexpr std::string_view drop_last_flag{"--drop-last="};
+  if (args.size() >= 2 &&
+      std::string_view{args[1]}.starts_with(drop_last_flag)) {
+    std::string_view const text =
+        std::string_view{args[1]}.substr(drop_last_flag.size());
+    auto const count = parse_count(text);
+    if (!count) {
+      std::cerr << "write_zone_mask_mesh: \"" << text
+                << "\" is not a byte count\n";
+      return EXIT_FAILURE;
+    }
+    drop_last = *count;
+    args = args.subspan(1);
+  }
   if (args.size() < 2) {
-    std::cerr << "Usage: write_zone_mask_mesh <output.ume> [<zone mask>...]\n";
+    std::cerr << "Usage: write_zone_mask_mesh [--drop-last=<bytes>] "
+                 "<output.ume> [<zone mask>...]\n";
     return EXIT_FAILURE;
   }
 
@@ -90,6 +121,16 @@ int main(int argc, char *argv[]) {
   if (!os) {
     std::cerr << "write_zone_mask_mesh: failed writing \"" << args[1] << "\"\n";
     return EXIT_FAILURE;
+  }
+  if (drop_last > 0) {
+    std::filesystem::path const path{args[1]};
+    std::uintmax_t const size = std::filesystem::file_size(path);
+    if (drop_last > size) {
+      std::cerr << "write_zone_mask_mesh: cannot drop " << drop_last
+                << " bytes from the " << size << " of \"" << args[1] << "\"\n";
+      return EXIT_FAILURE;
+    }
+    std::filesystem::resize_file(path, size - drop_last);
   }
   return EXIT_SUCCESS;
 }

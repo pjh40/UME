@@ -28,6 +28,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <istream>
 #include <memory>
 #include <new>
@@ -49,6 +50,14 @@ template <class T>
 constexpr bool is_pinned_v =
     !std::is_copy_constructible_v<T> && !std::is_copy_assignable_v<T> &&
     !std::is_move_constructible_v<T> && !std::is_move_assignable_v<T>;
+
+/* The object representation of `value`, for a member that may hold bytes
+   that are not a valid value of its type. */
+template <class T> std::array<std::byte, sizeof(T)> bytes_of(T const &value) {
+  std::array<std::byte, sizeof(T)> bytes;
+  std::memcpy(bytes.data(), &value, sizeof(T));
+  return bytes;
+}
 
 } // namespace
 
@@ -933,19 +942,33 @@ TEST_CASE("mesh: write lays fields out in the file order", "[mesh][io]") {
   CHECK_FALSE(written.str() == mesh_layout(true));
 }
 
-/* Mesh::ivtag had no initializer, so a mesh read from a stream that had
-   failed, or built in place and written without setting it, carried whatever
-   the storage held.  The storage is filled with a pattern first so that a
-   constructor that leaves ivtag alone is seen to.  It defaults to the version
-   Mesh::write lays out, so a default mesh written reads back as that. */
-TEST_CASE("mesh: default construction sets the input version", "[mesh][io]") {
+/* Mesh's header scalars had no initializers, so a mesh read from a stream
+   that had failed, or built in place and written without setting them,
+   carried whatever the storage held: a read of a 0-3 byte file fails before
+   the header and left dump_iotas indeterminate, and Mesh::read branches on
+   it.  The storage is filled with a pattern first so
+   that a constructor that leaves any of them alone is seen to.  ivtag
+   defaults to the version Mesh::write lays out, so a default mesh written
+   reads back as that; the rest describe rank 0 of 1, Cartesian, with no
+   iotas.  A bool or an enum holding the fill is not a valid value of its
+   type, so those are compared by their bytes. */
+TEST_CASE("mesh: default construction sets every header scalar", "[mesh][io]") {
   constexpr std::byte fill{0xA5};
-  // Positive control: the fill, left in place, is not the version expected.
+  // Positive controls: the fill, left in place, is none of the values
+  // expected.  false and CARTESIAN are all zero bytes.
   static_assert(static_cast<int>(0xA5A5A5A5U) != UME_VERSION_2);
+  static_assert(static_cast<int>(0xA5A5A5A5U) != 0);
+  static_assert(static_cast<int>(0xA5A5A5A5U) != 1);
+  static_assert(fill != std::byte{0} && Mesh::CARTESIAN == 0);
 
   alignas(Mesh) std::array<std::byte, sizeof(Mesh)> storage;
   storage.fill(fill);
   Mesh *const mesh = ::new (storage.data()) Mesh;
   CHECK(mesh->ivtag == UME_VERSION_2);
+  CHECK(bytes_of(mesh->version_header) == bytes_of(false));
+  CHECK(mesh->mype == 0);
+  CHECK(mesh->numpe == 1);
+  CHECK(bytes_of(mesh->geo) == bytes_of(Mesh::CARTESIAN));
+  CHECK(bytes_of(mesh->dump_iotas) == bytes_of(false));
   std::destroy_at(mesh);
 }

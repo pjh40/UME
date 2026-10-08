@@ -126,6 +126,58 @@ set_tests_properties(scale_mesh_unwritable_output PROPERTIES
     "Unable to open file \"[^\"]*/unwritable\\.00001\\.00000\\.ume\" for writing\\.[\r\n]+Aborting\\."
   TIMEOUT 90)
 
+# A partition file that ends early has to fail the run too: Mesh::read goes
+# quiet once its stream fails, and scale_mesh scaled and wrote what it had and
+# printed "Done.".  Ten bytes off the end take the zones' subset count and the
+# newlines after it; the cut has to fall after the last entity and neighbor
+# tag, which a Debug build asserts on.  The same mesh written whole reaches
+# "Done.", the control.
+add_test(NAME scale_mesh_write_truncated_mesh
+  COMMAND write_zone_mask_mesh --drop-last=10
+    ${_scale_mesh_dir}/truncated.00000.ume 1 1 -1 -1)
+add_test(NAME scale_mesh_write_intact_mesh
+  COMMAND write_zone_mask_mesh ${_scale_mesh_dir}/intact.00000.ume 1 1 -1 -1)
+set_tests_properties(scale_mesh_write_truncated_mesh PROPERTIES
+  FIXTURES_SETUP scale_mesh_truncated_input)
+set_tests_properties(scale_mesh_write_intact_mesh PROPERTIES
+  FIXTURES_SETUP scale_mesh_intact_input)
+add_test(NAME scale_mesh_truncated_mesh
+  COMMAND scale_mesh ${_scale_mesh_dir}/truncated 1)
+set_tests_properties(scale_mesh_truncated_mesh PROPERTIES
+  FIXTURES_REQUIRED scale_mesh_truncated_input
+  PASS_REGULAR_EXPRESSION
+    "Unable to read a mesh from file \"[^\"]*/truncated\\.00000\\.ume\"\\.[\r\n]+Aborting\\."
+  TIMEOUT 90)
+add_test(NAME scale_mesh_intact_mesh
+  COMMAND scale_mesh ${_scale_mesh_dir}/intact 1)
+set_tests_properties(scale_mesh_intact_mesh PROPERTIES
+  FIXTURES_REQUIRED scale_mesh_intact_input
+  PASS_REGULAR_EXPRESSION "Done\\."
+  FAIL_REGULAR_EXPRESSION "Aborting\\."
+  TIMEOUT 90)
+
+# An output file that opens but cannot be written, as on a full disk, has to
+# fail the run as well: an unchecked write left an empty file, printed "Done."
+# and exited 0.  A file-size limit of zero stands in for the full disk, with
+# SIGXFSZ ignored so that the write fails with EFBIG instead of killing the
+# process; the limit does not apply to the read.  scale_mesh_intact_mesh, the
+# same mesh with no limit, is the control.
+if(UNIX)
+  add_test(NAME scale_mesh_write_size_limited_mesh
+    COMMAND write_zone_mask_mesh
+      ${_scale_mesh_dir}/size_limited.00000.ume 1 1 -1 -1)
+  set_tests_properties(scale_mesh_write_size_limited_mesh PROPERTIES
+    FIXTURES_SETUP scale_mesh_size_limited_input)
+  add_test(NAME scale_mesh_output_over_size_limit
+    COMMAND sh -c "trap '' XFSZ; ulimit -f 0; exec \"$0\" \"$@\""
+      $<TARGET_FILE:scale_mesh> ${_scale_mesh_dir}/size_limited 1)
+  set_tests_properties(scale_mesh_output_over_size_limit PROPERTIES
+    FIXTURES_REQUIRED scale_mesh_size_limited_input
+    PASS_REGULAR_EXPRESSION
+      "Unable to write a mesh to file \"[^\"]*/size_limited\\.00001\\.00000\\.ume\"\\.[\r\n]+Aborting\\."
+    TIMEOUT 90)
+endif()
+
 # Writes a one-partition mesh of points at (x, 0, 0), or prints the points of
 # one; the stitch tests below use it on both sides of scale_mesh.
 add_executable(point_mesh point_mesh.cc)
@@ -217,9 +269,14 @@ if(TARGET ume_mpi)
   add_test(NAME ume_mpi_write_long_basename_mesh
     COMMAND write_zone_mask_mesh
       ${_long_basename_dir}/lower-interior.00000.ume 1 1 -1 -1)
+  # The lower-interior mesh cut short as in scale_mesh_truncated_mesh above.
+  add_test(NAME ume_mpi_write_truncated_mesh
+    COMMAND write_zone_mask_mesh --drop-last=10
+      truncated.00000.ume 1 1 -1 -1
+    WORKING_DIRECTORY ${_zone_mask_dir})
   set_tests_properties(
     ume_mpi_write_no_zone_mesh ume_mpi_write_lower_interior_mesh
-    ume_mpi_write_long_basename_mesh PROPERTIES
+    ume_mpi_write_long_basename_mesh ume_mpi_write_truncated_mesh PROPERTIES
     FIXTURES_SETUP ume_mpi_zone_mask_meshes)
 
   add_test(NAME ume_mpi_no_interior_zone
@@ -241,9 +298,19 @@ if(TARGET ume_mpi)
       -DEXPECT_SUCCESS=ON
       "-DEXPECT=Checking gradient result.*Done\\."
       ${_ume_mpi_check})
+  # A partition file that ends early has to take the job down as one that
+  # cannot be opened does; unchecked, the rank ran on whatever Mesh::read had
+  # reached.  ume_mpi_interior_zones_in_lower_half, on the same mesh whole, is
+  # the control.
+  add_test(NAME ume_mpi_truncated_mesh
+    COMMAND ${CMAKE_COMMAND}
+      -DARGS=truncated
+      "-DEXPECT=Unable to read a mesh from file \"truncated\\.00000\\.ume\"\\..*Transport::abort: this rank could not read its mesh file"
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
   set_tests_properties(
     ume_mpi_no_interior_zone ume_mpi_interior_zones_in_lower_half
-    ume_mpi_long_basename PROPERTIES
+    ume_mpi_long_basename ume_mpi_truncated_mesh PROPERTIES
     FIXTURES_REQUIRED ume_mpi_zone_mask_meshes
     TIMEOUT 90)
 endif()

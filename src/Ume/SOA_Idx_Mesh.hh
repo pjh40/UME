@@ -48,11 +48,11 @@ struct Mesh : public Mesh_Base {
   enum Geometry_Type { CARTESIAN, CYLINDRICAL, SPHERICAL };
   //! Input version tag; defaults to the version write() lays out
   int ivtag{UME_VERSION_2};
-  bool version_header;
-  int mype;
-  int numpe;
-  Geometry_Type geo;
-  bool dump_iotas;
+  bool version_header{false};
+  int mype{0};
+  int numpe{1};
+  Geometry_Type geo{CARTESIAN};
+  bool dump_iotas{false};
   Corners corners;
   Edges edges;
   Faces faces;
