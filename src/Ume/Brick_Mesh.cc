@@ -380,13 +380,15 @@ void Builder::emit_zone(int const z, std::vector<Loop> const &loops,
 
   /* s5: the other side of this zone on the same edge, i.e. the one on the
      zone's other face containing that edge.  A degenerate boundary zone has a
-     single face, so its sides refer to themselves. */
+     single face, so its sides have no partner, and that is spelled -1: the
+     sentinel `m:f>z2` uses for a face with nothing behind it, and what the
+     meshes UME was written for carry on a phantom side. */
   for (auto const &[e, sides] : edge_sides) {
     if (sides.size() == 2) {
       ss5_[static_cast<size_t>(sides[0])] = sides[1];
       ss5_[static_cast<size_t>(sides[1])] = sides[0];
     } else if (sides.size() == 1) {
-      ss5_[static_cast<size_t>(sides[0])] = sides[0];
+      ss5_[static_cast<size_t>(sides[0])] = -1;
     } else {
       throw std::logic_error("brick: an edge appears in more than two faces "
                              "of the same zone");

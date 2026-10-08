@@ -477,23 +477,23 @@ TEST_CASE("audit: the iota maps are checked", "[brick][audit]") {
   }
 }
 
-/* The conventions below are not this generator's, but the ones the meshes UME
-   was written for use.  They were found by auditing the pipe_3d and
-   AggAdv_short datasets, which the audit rejected until it learned them.  Each
-   section keeps a negative control, so accepting the convention is not the same
-   as no longer checking anything. */
+/* The conventions below are the ones the meshes UME was written for use.  They
+   were found by auditing the pipe_3d and AggAdv_short datasets, which the audit
+   rejected until it learned them, and the generator now follows them rather
+   than keeping a spelling of its own.  Each section keeps a negative control,
+   so accepting the convention is not the same as no longer checking anything. */
 TEST_CASE(
     "audit: the reference meshes' conventions are accepted", "[brick][audit]") {
-  SECTION("m:s>s5 == -1 on a phantom side means the same as pointing at self") {
+  SECTION("m:s>s5 == -1 on a phantom side, straight from the generator") {
     Mesh mesh;
     Ume::attach_serial_transport(mesh);
     Brick::build(audit_spec(), mesh);
 
-    auto &s2s5 = mesh.ds->access_intv("m:s>s5");
+    auto const &s2s5 = mesh.ds->caccess_intv("m:s>s5");
     int phantoms{0};
     for (int s = 0; s < mesh.sides.size(); ++s)
       if (mesh.sides.mask[static_cast<size_t>(s)] < 0) {
-        s2s5[static_cast<size_t>(s)] = -1;
+        CHECK(s2s5[static_cast<size_t>(s)] == -1);
         phantoms += 1;
       }
     REQUIRE(phantoms > 0);
@@ -503,6 +503,31 @@ TEST_CASE(
     INFO(report.str());
     CHECK(res.ok());
     CHECK(res.problems == 0);
+  }
+
+  SECTION("a phantom side that points at itself is not that convention") {
+    /* The other spelling of "no partner" that this generator used to emit.
+       Only -1 is carried forward, so the audit has to refuse this one. */
+    Mesh mesh;
+    Ume::attach_serial_transport(mesh);
+    Brick::build(audit_spec(), mesh);
+
+    auto &s2s5 = mesh.ds->access_intv("m:s>s5");
+    int phantom = -1;
+    for (int s = 0; s < mesh.sides.size(); ++s)
+      if (mesh.sides.mask[static_cast<size_t>(s)] < 0) {
+        phantom = s;
+        break;
+      }
+    REQUIRE(phantom >= 0);
+    s2s5[static_cast<size_t>(phantom)] = phantom;
+
+    std::ostringstream report;
+    auto const res = SOA_Idx::audit(mesh, report, {});
+    INFO(report.str());
+    CHECK_FALSE(res.ok());
+    CHECK_THAT(report.str(),
+        Catch::Matchers::ContainsSubstring("a side with no partner carries -1"));
   }
 
   SECTION("but a real side still has to have one") {

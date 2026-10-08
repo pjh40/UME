@@ -264,15 +264,18 @@ void Auditor::ranges(bool const report) {
     if (smask_[s] == 0)
       continue; // ghost sides carry no local connectivity
     /* `m:s>s5` is the other side of the same zone on the same edge, and a
-       phantom side has no such partner.  Brick_Mesh points it back at itself;
-       the meshes UME was written for leave -1 there, the sentinel `m:f>z2`
-       uses for a face with nothing behind it.  Nothing dereferences s5 (see
-       doc/brick_mesh.md), so both spellings mean "no partner". */
-    bool const s5_ok = in(s2s5_[s], sll_) || (smask_[s] < 0 && s2s5_[s] == -1);
-    if (!in(s2z_[s], zll_) || !in(s2p1_[s], pll_) || !in(s2p2_[s], pll_) ||
-        !in(s2e_[s], ell_) || !in(s2f_[s], fll_) || !in(s2c1_[s], cll_) ||
-        !in(s2c2_[s], cll_) || !in(s2s2_[s], sll_) || !in(s2s3_[s], sll_) ||
-        !in(s2s4_[s], sll_) || !s5_ok)
+       phantom side has no such partner.  "No partner" is spelled -1, the
+       sentinel `m:f>z2` uses for a face with nothing behind it and what the
+       meshes UME was written for carry there; a phantom side pointing
+       anywhere else, itself included, is a defect. */
+    if (smask_[s] < 0 && s2s5_[s] != -1)
+      flag() << "phantom side " << s << " has m:s>s5 = " << s2s5_[s]
+             << ", but a side with no partner carries -1\n";
+    else if (!in(s2z_[s], zll_) || !in(s2p1_[s], pll_) ||
+        !in(s2p2_[s], pll_) || !in(s2e_[s], ell_) || !in(s2f_[s], fll_) ||
+        !in(s2c1_[s], cll_) || !in(s2c2_[s], cll_) || !in(s2s2_[s], sll_) ||
+        !in(s2s3_[s], sll_) || !in(s2s4_[s], sll_) ||
+        (smask_[s] > 0 && !in(s2s5_[s], sll_)))
       flag() << "side " << s << " has an out-of-range " << culprit(s)
              << " entry\n";
     else if (s2p1_[s] == s2p2_[s])
@@ -596,14 +599,18 @@ void Auditor::connectivity() {
   /*! `m:s>s5` is the other side of the same body on the same edge: the one on
       the second of the two faces that meet there.  A body with a single face
       -- a boundary zone, or the phantom ring shadowing one boundary face --
-      has no second face, and its sides refer to themselves. */
+      has no second face, and its sides carry -1 (checked under "side map
+      ranges" above).  A side is never its own partner. */
   start("m:s>s5 pairing");
   for (int s = 0; s < sll_ && !enough(); ++s) {
     if (!ok[s] || !in(s2s5_[s], sll_))
       continue;
     int const s5 = s2s5_[s];
-    if (s5 == s)
-      continue; // a one-faced body; the grouping below is what catches these
+    if (s5 == s) {
+      bad() << "side " << s << " is its own m:s>s5; a side with no partner "
+            << "carries -1\n";
+      continue;
+    }
     if (s2s5_[s5] != s)
       bad() << "side " << s << " -> " << s5 << " -> " << s2s5_[s5]
             << " is not an involution\n";

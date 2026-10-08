@@ -20,6 +20,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace Ume {
 namespace Part {
@@ -683,21 +684,30 @@ void extract(SOA_Idx::Mesh const &src, Decomposition const &d, int pe,
   remap("m:s>c2", s, c, "m:s>c2", sll);
 
   /*! The side-to-side maps are the only ones that can leave this rank.  A
-      ghost side's `m:s>s5` is on a face of the ghost zone we did not import,
-      and with `Ghost_Depth::NONE` a cut side's `m:s>s2` has nothing to pair
-      with at all.  Both become self-references, which is what the library
-      already uses for "no partner": every `Auditor::connectivity` check on
-      these maps gates on `usable()`, which a ghost side fails, and the
-      `NONE` case is the audit failure that makes it diagnostic-only. */
+      ghost side's `m:s>s5` is on a face of the ghost zone we did not import;
+      it becomes -1, the one spelling of "no partner" the mesh format has
+      (`m:f>z2` on a face with nothing behind it, `m:s>s5` on a phantom side).
+      Nothing dereferences s5, and every `Auditor::connectivity` check on it
+      gates on `usable()`, which a ghost side fails.
+
+      With `Ghost_Depth::NONE` a cut side's `m:s>s2` has nothing to pair with
+      at all.  That one stays a self-reference, not -1: `calc_face_area` and
+      `VAR_point_norm` index through s2 without a bounds check, and NONE is a
+      diagnostic that still has to be computable.  The audit's `(face, edge)`
+      pairing check is what fails for it.  A phantom side's s5 source value is
+      already -1 and `s[-1]` is never read. */
   for (char const *name : {"m:s>s2", "m:s>s3", "m:s>s4", "m:s>s5"}) {
+    bool const is_s5 = std::string_view{name} == "m:s>s5";
     auto const &in = src.ds->caccess_intv(name);
     auto &out = dst.ds->access_intv(name);
     for (int g = 0; g < sll; ++g) {
       int const l = s[g];
       if (l < 0)
         continue;
-      int const partner = s[in[static_cast<std::size_t>(g)]];
-      out[static_cast<std::size_t>(l)] = (partner >= 0) ? partner : l;
+      int const gp = in[static_cast<std::size_t>(g)];
+      int const partner = (gp >= 0) ? s[gp] : -1;
+      out[static_cast<std::size_t>(l)] =
+          (partner >= 0) ? partner : (is_s5 ? -1 : l);
     }
   }
 

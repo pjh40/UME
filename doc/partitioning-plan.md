@@ -89,8 +89,11 @@ Notes on `extract` itself:
   build in ascending serial-global order, so `mySrcs[P]` on R and `myCpys[R]`
   on P are the same set enumerated the same way, with nothing exchanged.
 - Only `m:s>s5` on a ghost side and `m:s>s2` under `Ghost_Depth::NONE` are
-  allowed to dangle; both become self-references. Every other map is required
-  to resolve, and `Renumber::require` throws if it does not.
+  allowed to dangle. The ghost `s5` becomes -1, the reference meshes' spelling
+  of "no partner" (changed 2026-10-08; it was a self-reference). The `NONE`
+  `s2` stays a self-reference because `calc_face_area` indexes through it.
+  Every other map is required to resolve, and `Renumber::require` throws if it
+  does not.
 
 **Phase 1, commit 8 complete.** `src/partition.cc` → `ume_partition`, with
 `--ranks --method --list-methods --vertex-weight --edge-weight --imbalance
@@ -1345,9 +1348,9 @@ it without P's mesh existing. So we never hold N `Mesh` objects at once (see R1)
      holds.
    - Ghost sides' own maps: `m:s>z` = ghost zone, `m:s>f/e/p1/p2` = local reals,
      `m:s>c1/c2` = ghost corners, `m:s>s2` = the real partner, `m:s>s3/s4` = the
-     imported ring. `m:s>s5` points into faces we didn't import — set it to self.
-     Safe: every `Auditor::connectivity` check gates on `usable(s)`, which requires
-     `smask != 0`.
+     imported ring. `m:s>s5` points into faces we didn't import — set it to -1,
+     as on a phantom side. Safe: every `Auditor::connectivity` check gates on
+     `usable(s)`, which requires `smask != 0`.
 5. **Ghost records.** For ghost offset `g` at local index `l = lsize + g`:
    `cpy_idx[g] = l`, `src_pe[g] = owner`, `src_idx[g] = layout.local_index(owner, gid)`,
    `ghost_mask[g] = src.X.mask[gid]` (`renumbering.cc` reads `ghost_mask == 0` as

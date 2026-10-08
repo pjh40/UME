@@ -236,15 +236,14 @@ every real side.
 |---|---|
 | `m:s>s2` | the side with the same `(face, edge)` in the zone on the other side of that face.  The only one the library consumes; built by pairing off `(face, edge)` keys. |
 | `m:s>s3`, `m:s>s4` | the next and previous sides around the same face of the same zone. |
-| `m:s>s5` | the other side of the same zone on the same edge.  An edge of a closed polyhedron lies in exactly two of its faces; a degenerate boundary zone has one face, so its sides refer to themselves. |
+| `m:s>s5` | the other side of the same zone on the same edge.  An edge of a closed polyhedron lies in exactly two of its faces; a degenerate boundary zone has one face, so its sides have no partner and carry -1. |
 
 `s3`, `s4` and `s5` are written to the file and renumbered, but are not read by
-any calculation; the conventions above are this generator's choice.  The meshes
-UME was written for make the other choice for `m:s>s5` on a phantom side, and
-leave -1 there rather than pointing it back at the side itself — the same
-sentinel `m:f>z2` uses for a face with nothing behind it.  Since nothing
-dereferences `s5`, both spellings mean "no partner", and `mesh_audit` accepts
-either.
+any calculation.  The -1 on a phantom side's `m:s>s5` is the convention of the
+meshes UME was written for, the same sentinel `m:f>z2` uses for a face with
+nothing behind it, and it is the only spelling of "no partner" carried forward:
+an earlier version of this generator pointed such a side back at itself, and
+`mesh_audit` now rejects that.  A side is never its own `s5`.
 
 ### Masks
 
