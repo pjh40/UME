@@ -56,6 +56,16 @@ int main(int argc, char *argv[]) {
    * after the call to MPI_Init for best performance. */
   Ume::initialize(argc, argv);
 
+  /* After Ume::initialize, which takes argc by reference and strips the
+     --kokkos-* arguments: `ume_mpi --kokkos-num-threads=4` has a basename
+     before that call and none after it. */
+  if (argc < 2) {
+    if (comm.pe() == 0)
+      std::cerr << "Usage: ume_mpi <basename> [-i <count>]" << std::endl;
+    comm.abort("no mesh basename was given");
+    return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
+  }
+
   /* Create a mesh instance and attach the communicator to the mesh. */
   Mesh mesh;
   mesh.comm = &comm;
@@ -63,10 +73,12 @@ int main(int argc, char *argv[]) {
   if (comm.pe() == 0)
     std::cout << "Initializing mesh..." << std::endl;
 
-  /* Read the data file */
+  /* Read the data file.  A rank that cannot read its partition has to take the
+     whole job down: returning here would leave the other ranks waiting in the
+     gathscat below, which hangs rather than fails. */
   if (!read_mesh(argv[1], comm.pe(), mesh)) {
-    std::cerr << "Aborting." << std::endl;
-    return EXIT_FAILURE;
+    comm.abort("this rank could not read its mesh file");
+    return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
   }
 
   size_t ic = 1; // set iteration count to 1 for default
