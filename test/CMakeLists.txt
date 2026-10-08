@@ -57,6 +57,45 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
     )
 endif()
 
+# Driver test meshes
+
+# Writes a one-partition mesh holding only zones with the given masks; the
+# scale_mesh and ume_mpi driver tests below read it.
+add_executable(write_zone_mask_mesh write_zone_mask_mesh.cc)
+target_link_libraries(write_zone_mask_mesh PRIVATE Ume)
+target_compile_definitions(write_zone_mask_mesh PRIVATE
+  ${COMMON_COMPILE_DEFINITIONS})
+
+# scale_mesh driver tests
+
+# A basename with no partition file behind it has to stop scale_mesh before it
+# reads the unopened stream as a mesh.  "Aborting." is printed only on the way
+# to main's `return 1`; an unchecked open went on to Mesh::read, which in a
+# Debug build stops at an assertion instead.
+add_test(NAME scale_mesh_unreadable_mesh
+  COMMAND scale_mesh ${CMAKE_CURRENT_BINARY_DIR}/no-such-mesh 2)
+set_tests_properties(scale_mesh_unreadable_mesh PROPERTIES
+  PASS_REGULAR_EXPRESSION
+    "Unable to open file \"[^\"]*/no-such-mesh\\.00000\\.ume\" for reading\\.[\r\n]+Aborting\\."
+  TIMEOUT 90)
+
+# An output file that cannot be opened has to fail the run too: an unchecked
+# open wrote nothing, printed "Done." and exited 0.  A directory sits where
+# scale 1 writes its partition file.
+set(_scale_mesh_dir ${CMAKE_CURRENT_BINARY_DIR}/scale_mesh_meshes)
+file(MAKE_DIRECTORY ${_scale_mesh_dir}/unwritable.00001.00000.ume)
+add_test(NAME scale_mesh_write_input_mesh
+  COMMAND write_zone_mask_mesh ${_scale_mesh_dir}/unwritable.00000.ume 1)
+set_tests_properties(scale_mesh_write_input_mesh PROPERTIES
+  FIXTURES_SETUP scale_mesh_input_mesh)
+add_test(NAME scale_mesh_unwritable_output
+  COMMAND scale_mesh ${_scale_mesh_dir}/unwritable 1)
+set_tests_properties(scale_mesh_unwritable_output PROPERTIES
+  FIXTURES_REQUIRED scale_mesh_input_mesh
+  PASS_REGULAR_EXPRESSION
+    "Unable to open file \"[^\"]*/unwritable\\.00001\\.00000\\.ume\" for writing\\.[\r\n]+Aborting\\."
+  TIMEOUT 90)
+
 # UME driver startup tests
 
 # ume_mpi run as an MPI singleton: a missing basename, one that the
@@ -90,10 +129,6 @@ if(TARGET ume_mpi)
   # Searching upward from the middle of the zone range ran off the end when the
   # upper half held none; a rank with no interior zone at all, which an
   # over-decomposed mesh has, has to take the job down.
-  add_executable(write_zone_mask_mesh write_zone_mask_mesh.cc)
-  target_link_libraries(write_zone_mask_mesh PRIVATE Ume)
-  target_compile_definitions(write_zone_mask_mesh PRIVATE
-    ${COMMON_COMPILE_DEFINITIONS})
   set(_zone_mask_dir ${CMAKE_CURRENT_BINARY_DIR}/zone_mask_meshes)
   file(MAKE_DIRECTORY ${_zone_mask_dir})
   # ume_mpi_long_basename names its mesh by an absolute basename more than

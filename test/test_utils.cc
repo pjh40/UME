@@ -66,6 +66,53 @@ TEST_CASE("vector<Vec3> binary r/w", "[utils]") {
   REQUIRE(in_vec == out_vec);
 }
 
+namespace {
+
+/* Leaves a recognizable non-zero pattern in the stack below the caller, where
+   the next call's locals land: an uninitialized local in that call then holds
+   the pattern rather than whatever zeros happened to be there.  At -O0, which
+   is how the test trees build, this is reliable; optimized, it may not be. */
+[[gnu::noinline]] void scribble_stack() {
+  volatile unsigned char junk[4096];
+  for (auto &byte : junk)
+    byte = 0xA5;
+}
+
+} // namespace
+
+/* read_bin's length had no initializer, so a stream that had already failed
+   (a file that could not be opened) left it holding stack garbage, which then
+   sized the allocation and the read. */
+TEST_CASE("std::string binary read from an empty stream", "[utils]") {
+  std::string out{"stale"};
+  std::istringstream empty;
+  scribble_stack();
+  Ume::read_bin(empty, out);
+  CHECK(empty.fail());
+  CHECK(out.empty());
+
+  // Positive control: a stream that holds a string reads it into `out`.
+  std::stringstream full;
+  Ume::write_bin(full, std::string{"fresh"});
+  Ume::read_bin(full, out);
+  CHECK(out == "fresh");
+}
+
+TEST_CASE("vector<int> binary read from an empty stream", "[utils]") {
+  std::vector<int> out{1, 2, 3};
+  std::istringstream empty;
+  scribble_stack();
+  Ume::read_bin(empty, out);
+  CHECK(empty.fail());
+  CHECK(out.empty());
+
+  // Positive control: a stream that holds a vector reads it into `out`.
+  std::stringstream full;
+  Ume::write_bin(full, std::vector<int>{4, 5});
+  Ume::read_bin(full, out);
+  CHECK(out == std::vector<int>{4, 5});
+}
+
 TEST_CASE("ltrim", "[utils]") {
   std::string a{"  \tThis is a test\t    "};
   std::string b;

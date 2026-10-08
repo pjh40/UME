@@ -51,7 +51,7 @@ inline void write_bin<std::string>(std::ostream &os, std::string const &data) {
 //! String binary read
 template <>
 inline void read_bin<std::string>(std::istream &is, std::string &data) {
-  size_t len;
+  size_t len{0};
   read_bin(is, len);
   if (len == 0) {
     data.clear();
@@ -75,7 +75,7 @@ void write_bin(std::ostream &os, std::vector<T> const &data) {
 
 //! Binary read for std::vector
 template <class T> void read_bin(std::istream &is, std::vector<T> &data) {
-  size_t len;
+  size_t len{0};
   read_bin(is, len);
   if (len == 0) {
     std::vector<T> foo;

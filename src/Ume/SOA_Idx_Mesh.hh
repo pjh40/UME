@@ -46,7 +46,8 @@ using Types = Ume::DS_Types::Types;
 //! An Struct-Of-Arrays Mesh
 struct Mesh : public Mesh_Base {
   enum Geometry_Type { CARTESIAN, CYLINDRICAL, SPHERICAL };
-  int ivtag;
+  //! Input version tag; defaults to the version write() lays out
+  int ivtag{UME_VERSION_2};
   bool version_header;
   int mype;
   int numpe;

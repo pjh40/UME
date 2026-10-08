@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <istream>
 #include <memory>
+#include <new>
 #include <numeric>
 #include <random>
 #include <ranges>
@@ -927,4 +928,21 @@ TEST_CASE("mesh: write lays fields out in the file order", "[mesh][io]") {
   mesh.write(written);
   CHECK(written.str() == mesh_layout(false));
   CHECK_FALSE(written.str() == mesh_layout(true));
+}
+
+/* Mesh::ivtag had no initializer, so a mesh read from a stream that had
+   failed, or built in place and written without setting it, carried whatever
+   the storage held.  The storage is filled with a pattern first so that a
+   constructor that leaves ivtag alone is seen to.  It defaults to the version
+   Mesh::write lays out, so a default mesh written reads back as that. */
+TEST_CASE("mesh: default construction sets the input version", "[mesh][io]") {
+  constexpr std::byte fill{0xA5};
+  // Positive control: the fill, left in place, is not the version expected.
+  static_assert(static_cast<int>(0xA5A5A5A5U) != UME_VERSION_2);
+
+  alignas(Mesh) std::array<std::byte, sizeof(Mesh)> storage;
+  storage.fill(fill);
+  Mesh *const mesh = ::new (storage.data()) Mesh;
+  CHECK(mesh->ivtag == UME_VERSION_2);
+  std::destroy_at(mesh);
 }

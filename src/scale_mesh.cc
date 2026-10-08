@@ -104,6 +104,7 @@ bool read_mesh(
   if (!is) {
     std::cerr << "Unable to open file \"" << fname << "\" for reading."
               << std::endl;
+    return false;
   }
   mesh.read(is);
   is.close();
@@ -306,8 +307,9 @@ bool write_mesh(char const *const basename, int const mype, int const scale,
   std::string const fname = Ume::mesh_filename(basename, mype, scale);
   std::ofstream os(fname);
   if (!os) {
-    std::cerr << "Unable to open file \"" << fname << "\" for reading."
+    std::cerr << "Unable to open file \"" << fname << "\" for writing."
               << std::endl;
+    return false;
   }
   mesh.write(os);
   os.close();
