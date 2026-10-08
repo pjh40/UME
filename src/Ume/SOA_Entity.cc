@@ -43,7 +43,9 @@ void read_bin<Ume::SOA_Idx::Entity::Subset>(
     std::istream &is, std::vector<Ume::SOA_Idx::Entity::Subset> &data) {
   size_t len{0};
   read_bin(is, len);
-  if (len == 0) {
+  // A stream that ends inside the length word leaves the bytes it got in
+  // `len`; a failed read is an empty one.
+  if (!is || len == 0) {
     data.clear();
   } else {
     data.resize(len);

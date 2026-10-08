@@ -52,7 +52,9 @@ template <>
 inline void read_bin<std::string>(std::istream &is, std::string &data) {
   size_t len{0};
   read_bin(is, len);
-  if (len == 0) {
+  // A stream that ends inside the length word leaves the bytes it got in
+  // `len`; a failed read is an empty one.
+  if (!is || len == 0) {
     data.clear();
   } else {
     data.resize(len);
@@ -75,7 +77,9 @@ void write_bin(std::ostream &os, std::vector<T> const &data) {
 template <class T> void read_bin(std::istream &is, std::vector<T> &data) {
   size_t len{0};
   read_bin(is, len);
-  if (len == 0) {
+  // A stream that ends inside the length word leaves the bytes it got in
+  // `len`; a failed read is an empty one.
+  if (!is || len == 0) {
     std::vector<T> foo;
     data.swap(foo);
   } else {

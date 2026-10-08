@@ -159,6 +159,83 @@ TEST_CASE(
   CHECK(out == written);
 }
 
+/* A stream that ends inside the 8-byte length word: istream::read stores the
+   bytes it got before failing, so the one byte here lands over the zero
+   initializer and the length reads as 5. The readers sized their container
+   from it. The byte is the file's own, so this is deterministic without
+   scribble_stack(). */
+namespace {
+std::string const cut_length{'\x05'};
+} // namespace
+
+TEST_CASE(
+    "std::string binary read from a stream cut inside the length", "[utils]") {
+  std::string out{"stale"};
+  std::istringstream cut{cut_length};
+  Ume::read_bin(cut, out);
+  CHECK(cut.fail());
+  CHECK(out.size() == 0U);
+
+  // Positive control: a stream that holds a string reads it into `out`.
+  std::stringstream full;
+  Ume::write_bin(full, std::string{"fresh"});
+  Ume::read_bin(full, out);
+  CHECK(out == "fresh");
+}
+
+TEST_CASE(
+    "vector<int> binary read from a stream cut inside the length", "[utils]") {
+  std::vector<int> out{1, 2, 3};
+  std::istringstream cut{cut_length};
+  Ume::read_bin(cut, out);
+  CHECK(cut.fail());
+  CHECK(out.size() == 0U);
+
+  // Positive control: a stream that holds a vector reads it into `out`.
+  std::stringstream full;
+  Ume::write_bin(full, std::vector<int>{4, 5});
+  Ume::read_bin(full, out);
+  CHECK(out == std::vector<int>{4, 5});
+}
+
+TEST_CASE(
+    "Neighbors binary read from a stream cut inside the length", "[utils]") {
+  using Ume::Comm::Neighbors;
+  Neighbors out{{1, {2, 3}}};
+  std::stringstream cut;
+  Ume::write_bin(cut, std::string{"neighbors"});
+  cut << cut_length;
+  Ume::read_bin<Neighbors>(cut, out);
+  CHECK(cut.fail());
+  CHECK(out.size() == 0U);
+
+  // Positive control: a stream that holds a Neighbors reads it into `out`.
+  Neighbors const written{{4, {5, 6}}, {7, {8}}};
+  std::stringstream full;
+  Ume::write_bin<Neighbors>(full, written);
+  Ume::read_bin<Neighbors>(full, out);
+  CHECK(out == written);
+}
+
+TEST_CASE("vector<Entity::Subset> binary read from a stream cut inside the "
+          "length",
+    "[utils]") {
+  using Subset = Ume::SOA_Idx::Entity::Subset;
+  std::vector<Subset> out{{"stale", 1, {0}, {1}}};
+  std::istringstream cut{cut_length};
+  Ume::read_bin(cut, out);
+  CHECK(cut.fail());
+  CHECK(out.size() == 0U);
+
+  // Positive control: a stream that holds subsets reads them into `out`.
+  std::vector<Subset> const written{
+      {"left", 2, {0, 1, 2}, {1, 1, 0}}, {"right", 0, {}, {}}};
+  std::stringstream full;
+  Ume::write_bin(full, written);
+  Ume::read_bin(full, out);
+  CHECK(out == written);
+}
+
 TEST_CASE("ltrim", "[utils]") {
   std::string a{"  \tThis is a test\t    "};
   std::string b;

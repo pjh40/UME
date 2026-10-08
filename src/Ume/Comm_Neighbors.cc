@@ -49,7 +49,9 @@ void read_bin<Comm::Neighbors>(std::istream &is, Ume::Comm::Neighbors &nvec) {
   read_bin(is, dummy);
   assert(dummy == "neighbors");
   read_bin(is, len);
-  if (len == 0) {
+  // A stream that ends inside the length word leaves the bytes it got in
+  // `len`; a failed read is an empty one.
+  if (!is || len == 0) {
     Ume::Comm::Neighbors foo;
     nvec.swap(foo);
   } else {
