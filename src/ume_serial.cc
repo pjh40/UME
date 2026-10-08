@@ -86,6 +86,11 @@ std::vector<Mesh_Ptr> read_meshes(int const argc, char *argv[]) {
     }
     ranks.push_back(std::make_unique<Mesh>());
     ranks.back()->read(is);
+    if (!is) {
+      std::cerr << "Unable to read a mesh from file \"" << argv[i] << "\"."
+                << std::endl;
+      return std::vector<Mesh_Ptr>{};
+    }
     if (ranks.back()->mype != i - 1)
       need_sort = true;
   }

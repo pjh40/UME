@@ -344,6 +344,86 @@ foreach(_bad_scale IN ITEMS 1x -2147483648)
     TIMEOUT 90)
 endforeach()
 
+# Runs a driver through check_exit_status.cmake, which holds it to an exit
+# status as well as to its output.
+set(_exit_status_check
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_exit_status.cmake)
+
+# ume_serial driver tests
+
+# A rank file that ends early has to fail the run as one that cannot be
+# opened does: ume_serial checked only the open, read the file as far as it
+# went and computed on it, and exited 0.  The cut is scale_mesh_truncated_mesh's.
+# The same mesh whole exits 0, the control.
+set(_ume_serial_dir ${CMAKE_CURRENT_BINARY_DIR}/ume_serial_meshes)
+file(MAKE_DIRECTORY ${_ume_serial_dir})
+add_test(NAME ume_serial_write_truncated_mesh
+  COMMAND write_zone_mask_mesh --drop-last=10
+    ${_ume_serial_dir}/truncated.00000.ume 1 1 -1 -1)
+add_test(NAME ume_serial_write_intact_mesh
+  COMMAND write_zone_mask_mesh ${_ume_serial_dir}/intact.00000.ume 1 1 -1 -1)
+set_tests_properties(
+  ume_serial_write_truncated_mesh ume_serial_write_intact_mesh PROPERTIES
+  FIXTURES_SETUP ume_serial_meshes)
+add_test(NAME ume_serial_truncated_mesh
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:ume_serial>
+    -DARGS=${_ume_serial_dir}/truncated.00000.ume
+    -DSTATUS=1
+    "-DEXPECT=Unable to read a mesh from file \"[^\"]*/truncated\\.00000\\.ume\"\\."
+    ${_exit_status_check})
+add_test(NAME ume_serial_intact_mesh
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:ume_serial>
+    -DARGS=${_ume_serial_dir}/intact.00000.ume
+    -DSTATUS=0
+    "-DEXPECT=Reading: [^\r\n]*/intact\\.00000\\.ume"
+    "-DREJECT=Unable to"
+    ${_exit_status_check})
+set_tests_properties(ume_serial_truncated_mesh ume_serial_intact_mesh
+  PROPERTIES
+  FIXTURES_REQUIRED ume_serial_meshes
+  TIMEOUT 90)
+
+# txt2bin driver tests
+
+# txt2bin_point_mesh.txt is a one-point mesh in the text format.  A binary
+# file that opens but cannot be written has to fail the conversion: an
+# unchecked write left an empty file, which the verification read then took
+# for a mesh (and a Debug build stopped at an assertion in it).  The zero
+# file-size limit, with SIGXFSZ ignored, is scale_mesh_output_over_size_limit's.
+# The check runs sh, which sets both and execs txt2bin: set on the cmake that
+# runs the check instead, the limit would reach txt2bin but the ignored
+# SIGXFSZ would not, since execute_process resets the child's signals.
+# txt2bin_point_mesh, the same conversion with no limit, is the control.
+set(_txt2bin_dir ${CMAKE_CURRENT_BINARY_DIR}/txt2bin_meshes)
+file(MAKE_DIRECTORY ${_txt2bin_dir})
+set(_txt2bin_input ${CMAKE_CURRENT_SOURCE_DIR}/txt2bin_point_mesh.txt)
+add_test(NAME txt2bin_point_mesh
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:txt2bin>
+    "-DARGS=${_txt2bin_input}$<SEMICOLON>${_txt2bin_dir}/point.ume"
+    -DSTATUS=0
+    "-DEXPECT=Copy verified"
+    "-DREJECT=Unable to"
+    ${_exit_status_check})
+set_tests_properties(txt2bin_point_mesh PROPERTIES TIMEOUT 90)
+if(UNIX)
+  set(_size_limited_args
+    -c "trap '' XFSZ && ulimit -f 0 && exec \"$0\" \"$@\""
+    $<TARGET_FILE:txt2bin> ${_txt2bin_input}
+    ${_txt2bin_dir}/size_limited.ume)
+  list(JOIN _size_limited_args "$<SEMICOLON>" _size_limited_args)
+  add_test(NAME txt2bin_output_over_size_limit
+    COMMAND ${CMAKE_COMMAND}
+      -DPROGRAM=sh
+      "-DARGS=${_size_limited_args}"
+      -DSTATUS=4
+      "-DEXPECT=Unable to write a mesh to file \"[^\"]*/size_limited\\.ume\"\\."
+      ${_exit_status_check})
+  set_tests_properties(txt2bin_output_over_size_limit PROPERTIES TIMEOUT 90)
+endif()
+
 # UME driver startup tests
 
 # ume_mpi run as an MPI singleton: a missing basename, one that the

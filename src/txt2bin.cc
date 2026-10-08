@@ -74,6 +74,11 @@ int main(int argc, char *argv[]) {
     m.write(os);
     timer.stop();
     os.close();
+    if (!os) {
+      std::cerr << "Unable to write a mesh to file \"" << argv[2] << "\"."
+                << std::endl;
+      return 4;
+    }
     std::cout << "Binary write took " << timer << "\n";
   }
 
@@ -86,9 +91,14 @@ int main(int argc, char *argv[]) {
     timer.start();
     m2.read(is);
     timer.stop();
+    is.close();
+    if (!is) {
+      std::cerr << "Unable to read a mesh from file \"" << argv[2] << "\"."
+                << std::endl;
+      return 2;
+    }
     std::cout << "Binary read took " << timer << " ("
               << txt_read_time / timer.seconds() << "x speedup)\n";
-    is.close();
     if (!(m == m2)) {
       std::cerr << "Error: write/read test failed, meshes not equivalent."
                 << std::endl;
