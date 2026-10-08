@@ -904,6 +904,70 @@ TEST_CASE("mesh: write and read round trip", "[mesh][io]") {
   CHECK_FALSE(dst.mesh == src.mesh);
 }
 
+/* A copy has one source, so an entity's myCpys names each copy once across
+   all of its remotes, and a scatter's OVERWRITE unpack writes each copy once.
+   That used to be asserted inside every OVERWRITE unpack, with a std::set
+   built on every call in every build; Mesh::read checks it once instead, and
+   fails the stream on a mesh that breaks it.  A source can have a copy on
+   several remotes, so mySrcs may name an entity twice, and has to be let
+   through. */
+TEST_CASE("mesh: read refuses a copy listed twice", "[mesh][io][comm]") {
+  using Ume::SOA_Idx::Entity;
+  using Change = void (*)(Entity &);
+  struct Case {
+    char const *what;
+    Change change;
+    bool refused;
+  };
+  Case const cases[] = {
+      // Positive control: the same mesh without a repeated copy reads.
+      {"nothing", [](Entity &) {}, false},
+      {"a source under two remotes",
+          [](Entity &e) {
+            e.mySrcs.push_back(
+                {e.mySrcs.front().pe + 1, {e.mySrcs.front().elements.front()}});
+          },
+          false},
+      {"a copy under two remotes",
+          [](Entity &e) {
+            e.myCpys.back().elements.push_back(
+                e.myCpys.front().elements.front());
+          },
+          true},
+      {"a copy twice under one remote",
+          [](Entity &e) {
+            e.myCpys.front().elements.push_back(
+                e.myCpys.front().elements.front());
+          },
+          true},
+  };
+
+  for (std::size_t i = 0; i < 7; ++i) {
+    for (auto const &[what, change, refused] : cases) {
+      Bare_Mesh src;
+      populate(src.mesh, true);
+      auto const &[name, entity] = entities_of(src.mesh)[i];
+      INFO("entity " << name << ", changed " << what);
+      change(*entity);
+      std::stringstream stream;
+      src.mesh.write(stream);
+
+      Bare_Mesh dst;
+      dst.mesh.read(stream);
+      CHECK(stream.fail() == refused);
+      if (!refused) {
+        CHECK(dst.mesh == src.mesh);
+        /* Positive control: the comparison sees the change that was read
+           back, so the mesh read differs from an unchanged one exactly when
+           something was changed. */
+        Bare_Mesh unchanged;
+        populate(unchanged.mesh, true);
+        CHECK((dst.mesh == unchanged.mesh) == (change == cases[0].change));
+      }
+    }
+  }
+}
+
 /* A change to the order of the format made in write and read alike passes
    both round trips above, and misreads every existing input file.  So the
    layout itself is pinned: the zones (a tag and the Entity fields, nothing

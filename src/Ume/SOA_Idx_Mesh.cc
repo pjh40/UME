@@ -15,6 +15,7 @@
 
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/soa_idx_helpers.hh"
+#include <ios>
 #include <istream>
 #include <ostream>
 
@@ -96,6 +97,17 @@ void Mesh::read(std::istream &is) {
   zones.read(is);
   if (dump_iotas)
     iotas.read(is);
+
+  /* A scatter overwrites each copy from its buffer entry, which is only well
+     defined if no copy is listed twice.  Checked here, once per mesh, rather
+     than on every unpack; and after the last entity, since a stream failed
+     partway through would assert on the next entity's neighbors tag. */
+  Entity const *const entities[] = {
+      &points, &edges, &faces, &sides, &corners, &zones, &iotas};
+  for (Entity const *const e : entities) {
+    if (!Comm::elements_unique(e->myCpys))
+      is.setstate(std::ios::failbit);
+  }
 }
 
 bool Mesh::operator==(Mesh const &rhs) const {

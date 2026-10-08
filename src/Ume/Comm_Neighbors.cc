@@ -14,9 +14,18 @@
 */
 
 #include "Ume/Comm_Neighbors.hh"
+#include <algorithm>
 #include <cassert>
 
 namespace Ume {
+
+bool Comm::elements_unique(Neighbors const &neighs) {
+  std::vector<int> all;
+  for (auto const &n : neighs)
+    all.insert(all.end(), n.elements.begin(), n.elements.end());
+  std::ranges::sort(all);
+  return std::ranges::adjacent_find(all) == all.end();
+}
 
 template <>
 void write_bin<Comm::Neighbors>(
