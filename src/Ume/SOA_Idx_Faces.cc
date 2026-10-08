@@ -86,10 +86,11 @@ bool Faces::VAR_fcoord::init_() const {
           int const f = h_s2f(s);
 #if defined(UME_SERIAL)
           h_fcoord(f) += h_pcoord(h_s2p1(s));
+          h_num_face_pts(f) += 1;
 #else
           Kokkos::atomic_add(&h_fcoord(f), h_pcoord(h_s2p1(s)));
+          Kokkos::atomic_add(&h_num_face_pts(f), 1);
 #endif
-          h_num_face_pts.access(f) += 1;
         }
       });
   auto const &fmask{faces().mask};

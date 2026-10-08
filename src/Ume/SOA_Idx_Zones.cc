@@ -80,10 +80,11 @@ bool Zones::VAR_zcoord::init_() const {
           int const z = h_c2z(c);
 #if defined(UME_SERIAL)
           h_zcoord(z) += h_pcoord(h_c2p(c));
+          h_num_zone_pts(z) += 1;
 #else
           Kokkos::atomic_add(&h_zcoord(z), h_pcoord(h_c2p(c)));
+          Kokkos::atomic_add(&h_num_zone_pts(z), 1);
 #endif
-          h_num_zone_pts.access(z) += 1;
         }
       });
 

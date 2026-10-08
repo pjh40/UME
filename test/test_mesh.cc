@@ -20,6 +20,7 @@
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/face_area.hh"
 #include "Ume/gradient.hh"
+#include "Ume/mem_exec_spaces.hh"
 #include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
@@ -212,5 +213,125 @@ TEST_CASE("face areas take one side of each pair, whichever thread runs it",
     Ume::calc_face_area(mesh, face_area);
     INFO("repetition " << rep);
     CHECK(count_wrong_areas(face_area, reference) == 0);
+  }
+}
+
+namespace {
+
+/* The number of entries of `centroid` that differ from `reference`.  The
+   coordinates are small integers, so every partial sum is exact and the
+   centroids are equal bit for bit whatever order the points were added in. */
+std::size_t count_wrong_centroids(Ume::DS_Types::VEC3V_T const &centroid,
+    Ume::DS_Types::VEC3V_T const &reference) {
+  std::size_t wrong = 0;
+  for (std::size_t i = 0; i < reference.size(); ++i)
+    if (!(centroid[i] == reference[i]))
+      ++wrong;
+  return wrong;
+}
+
+/* The centroid of the points `elem_to_pt` hangs on each of `nelem` elements,
+   over the members whose `mask` is set, summed in one thread. */
+Ume::DS_Types::VEC3V_T serial_centroids(int const nelem,
+    std::vector<int> const &member_to_elem,
+    std::vector<int> const &member_to_pt, std::vector<short> const &mask,
+    Ume::DS_Types::VEC3V_T const &pcoord) {
+  Ume::DS_Types::VEC3V_T centroid(nelem, Ume::Vec3(0.0));
+  std::vector<int> count(nelem, 0);
+  for (std::size_t m = 0; m < member_to_elem.size(); ++m) {
+    if (mask[m] == 0)
+      continue;
+    centroid[member_to_elem[m]] += pcoord[member_to_pt[m]];
+    ++count[member_to_elem[m]];
+  }
+  for (int e = 0; e < nelem; ++e)
+    centroid[e] /= static_cast<double>(count[e]);
+  return centroid;
+}
+
+} // namespace
+
+/* zcoord and fcoord sum the points of each zone (face) over its corners
+   (sides) in a parallel loop, and divide by how many there were.  With a
+   threaded host backend, two corners of one zone counted at once must both be
+   counted.  The mesh here has few zones and faces and many corners and sides
+   on each, numbered round-robin so that every thread's block of the loop
+   touches every zone, and every sixteenth corner and side is masked out.  The
+   derived variables are cached once computed, so each repetition builds a
+   fresh mesh. */
+TEST_CASE("zone and face centroids count every point, whichever thread "
+          "counts it",
+    "[mesh][centroid]") {
+  constexpr int nelem = 64;
+  constexpr int members_per_elem = 8192;
+  constexpr int nmember = nelem * members_per_elem;
+  constexpr int repetitions = 10;
+  INFO("host concurrency " << HostExecSpace().concurrency());
+
+  auto const elem_of = [](int const m) { return m % nelem; };
+  auto const is_masked = [](int const m) { return m / nelem % 16 == 15; };
+
+  for (int rep = 0; rep < repetitions; ++rep) {
+    Ume::Comm::Dummy_Transport transport;
+    Mesh mesh;
+    mesh.comm = &transport;
+    mesh.ivtag = UME_VERSION_2;
+    mesh.version_header = true;
+    mesh.mype = 0;
+    mesh.numpe = 1;
+    mesh.geo = Mesh::CARTESIAN;
+    mesh.dump_iotas = false;
+    Ume::SOA_Idx::Entity *const entities[] = {&mesh.points, &mesh.edges,
+        &mesh.faces, &mesh.zones, &mesh.corners, &mesh.sides, &mesh.iotas};
+    for (Ume::SOA_Idx::Entity *e : entities)
+      e->resize(0, 0, 0);
+    mesh.points.resize(nmember, nmember, 0);
+    mesh.zones.resize(nelem, nelem, 0);
+    mesh.faces.resize(nelem, nelem, 0);
+    mesh.corners.resize(nmember, nmember, 0);
+    mesh.sides.resize(nmember, nmember, 0);
+
+    /* Point p hangs on corner p and side p. */
+    auto &pcoord = mesh.ds->access_vec3v("pcoord");
+    for (int p = 0; p < nmember; ++p)
+      pcoord[p] = Ume::Vec3(std::array{static_cast<double>(p % 5),
+          static_cast<double>(p % 7), static_cast<double>(p % 11)});
+    std::fill(mesh.zones.mask.begin(), mesh.zones.mask.end(), short{1});
+    std::fill(mesh.faces.mask.begin(), mesh.faces.mask.end(), short{1});
+
+    auto &c_to_z = mesh.ds->access_intv("m:c>z");
+    auto &c_to_p = mesh.ds->access_intv("m:c>p");
+    auto &s_to_f = mesh.ds->access_intv("m:s>f");
+    auto &s_to_p1 = mesh.ds->access_intv("m:s>p1");
+    for (int m = 0; m < nmember; ++m) {
+      c_to_z[m] = s_to_f[m] = elem_of(m);
+      c_to_p[m] = s_to_p1[m] = m;
+      mesh.corners.mask[m] = mesh.sides.mask[m] =
+          is_masked(m) ? short{0} : short{1};
+    }
+
+    Ume::DS_Types::VEC3V_T const zone_reference =
+        serial_centroids(nelem, c_to_z, c_to_p, mesh.corners.mask, pcoord);
+    Ume::DS_Types::VEC3V_T const face_reference =
+        serial_centroids(nelem, s_to_f, s_to_p1, mesh.sides.mask, pcoord);
+
+    if (rep == 0) {
+      /* Positive control: point 0 is the origin, so dropping corner 0 leaves
+         zone 0's sum as it was and its count one short, which is what a
+         lost increment does.  That is one wrong centroid. */
+      std::vector<short> one_lost = mesh.corners.mask;
+      one_lost[0] = 0;
+      REQUIRE(count_wrong_centroids(
+                  serial_centroids(nelem, c_to_z, c_to_p, one_lost, pcoord),
+                  zone_reference) == 1);
+    }
+
+    INFO("repetition " << rep);
+    auto const &zcoord = mesh.ds->caccess_vec3v("zcoord");
+    REQUIRE(zcoord.size() == zone_reference.size());
+    CHECK(count_wrong_centroids(zcoord, zone_reference) == 0);
+    auto const &fcoord = mesh.ds->caccess_vec3v("fcoord");
+    REQUIRE(fcoord.size() == face_reference.size());
+    CHECK(count_wrong_centroids(fcoord, face_reference) == 0);
   }
 }
