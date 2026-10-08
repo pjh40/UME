@@ -60,6 +60,16 @@ struct Mesh : public Mesh_Base {
   Zones zones;
   Iotas iotas;
   Mesh();
+  /*! Each Entity member stores a `Mesh *` back to its owner, captured in the
+      Mesh constructor, and Entity::ds()/comm() dereference it.  Moving a Mesh
+      would leave every one of those pointing at the moved-from object, so a
+      Mesh is pinned to the address it was constructed at.  Hold them by
+      pointer (see `read_meshes` in ume_serial.cc) rather than by value in any
+      container that reorders or reallocates. */
+  Mesh(Mesh const &) = delete;
+  Mesh &operator=(Mesh const &) = delete;
+  Mesh(Mesh &&) = delete;
+  Mesh &operator=(Mesh &&) = delete;
   void write(std::ostream &os) const;
   void read(std::istream &is);
   constexpr size_t ndims() const { return 3; }

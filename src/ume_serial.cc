@@ -61,10 +61,9 @@ int main(int argc, char *argv[]) {
   return status;
 }
 
-/*! A Mesh must not be moved: each of its Entity members holds a pointer back
-    to the Mesh it was constructed in.  The meshes are therefore held by
-    pointer, so sorting the ranks below permutes pointers and leaves every Mesh
-    at the address it was constructed at. */
+/*! A Mesh cannot be moved (see the note on Mesh's deleted move constructor),
+    so the meshes are held by pointer: sorting the ranks below then permutes
+    pointers and leaves every Mesh at the address it was constructed at. */
 std::vector<Mesh_Ptr> read_meshes(int const argc, char *argv[]) {
   std::vector<Mesh_Ptr> ranks;
   bool need_sort{false};

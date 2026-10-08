@@ -27,12 +27,99 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <ranges>
+#include <type_traits>
 #include <vector>
 
 using Ume::SOA_Idx::Mesh;
+
+namespace {
+
+/* Neither copyable nor movable, by construction or by assignment. */
+template <class T>
+constexpr bool is_pinned_v =
+    !std::is_copy_constructible_v<T> && !std::is_copy_assignable_v<T> &&
+    !std::is_move_constructible_v<T> && !std::is_move_assignable_v<T>;
+
+} // namespace
+
+/* Every Entity caches the `Mesh *` it was constructed against, and a Mesh
+   hands each of its Entity members `this` in its constructor.  Relocating
+   either leaves that pointer aimed at the original -- `auto z = mesh.zones;`
+   would resolve ds() and comm() through the mesh it was copied from -- and
+   nothing in the Entity API can detect it, so neither type can be copied or
+   moved.  Entity itself is abstract, which makes it trivially not
+   constructible; the concrete entities are the ones a caller could copy. */
+static_assert(is_pinned_v<Mesh>);
+static_assert(!std::is_copy_assignable_v<Ume::SOA_Idx::Entity>);
+static_assert(!std::is_move_assignable_v<Ume::SOA_Idx::Entity>);
+static_assert(is_pinned_v<Ume::SOA_Idx::Corners>);
+static_assert(is_pinned_v<Ume::SOA_Idx::Edges>);
+static_assert(is_pinned_v<Ume::SOA_Idx::Faces>);
+static_assert(is_pinned_v<Ume::SOA_Idx::Points>);
+static_assert(is_pinned_v<Ume::SOA_Idx::Sides>);
+static_assert(is_pinned_v<Ume::SOA_Idx::Zones>);
+static_assert(is_pinned_v<Ume::SOA_Idx::Iotas>);
+/* Positive control: a movable, copyable type is not pinned. */
+static_assert(!is_pinned_v<std::vector<int>>);
+
+/* Consequently a Mesh cannot be an element of a std::vector that sizes,
+   reallocates or sorts itself: those all require MoveInsertable.  No type
+   trait states that -- vector's sizing constructor is declared for every
+   element type and only fails when its body is instantiated -- so the
+   guarantee is the assertions above, and the compile error lands at the point
+   of use. */
+
+TEST_CASE("mesh: entities point back at their own mesh", "[mesh]") {
+  Mesh mesh;
+  CHECK(&mesh.corners.mesh() == &mesh);
+  CHECK(&mesh.edges.mesh() == &mesh);
+  CHECK(&mesh.faces.mesh() == &mesh);
+  CHECK(&mesh.points.mesh() == &mesh);
+  CHECK(&mesh.sides.mesh() == &mesh);
+  CHECK(&mesh.zones.mesh() == &mesh);
+  CHECK(&mesh.iotas.mesh() == &mesh);
+
+  /* Positive control: another mesh's entities point at that mesh, not this
+     one, so the comparison distinguishes meshes. */
+  Mesh other;
+  CHECK(&other.zones.mesh() != &mesh);
+}
+
+TEST_CASE(
+    "mesh: sorting meshes held by pointer keeps them addressable", "[mesh]") {
+  /* The shape of read_meshes() in ume_serial.cc: meshes arriving out of rank
+     order are sorted into place.  Permuting the pointers has to leave every
+     Entity back-pointer valid. */
+  std::vector<std::unique_ptr<Mesh>> ranks;
+  for (int const pe : {2, 0, 1}) {
+    ranks.push_back(std::make_unique<Mesh>());
+    ranks.back()->mype = pe;
+  }
+  std::vector<Mesh const *> before;
+  for (auto const &m : ranks)
+    before.push_back(m.get());
+
+  std::ranges::sort(ranks, {}, [](auto const &m) { return m->mype; });
+
+  REQUIRE(ranks.size() == 3);
+  for (std::size_t i = 0; i < ranks.size(); ++i) {
+    CHECK(ranks[i]->mype == static_cast<int>(i));
+    /* Still self-consistent wherever it sits in the vector. */
+    CHECK(&ranks[i]->points.mesh() == ranks[i].get());
+  }
+  /* The set of addresses is unchanged: the sort moved pointers, not meshes. */
+  std::vector<Mesh const *> after;
+  for (auto const &m : ranks)
+    after.push_back(m.get());
+  CHECK(after != before);
+  std::ranges::sort(before);
+  std::ranges::sort(after);
+  CHECK(after == before);
+}
 
 /* A partition can legitimately come out empty -- ask for more ranks than the
    mesh has zones and some of them get nothing -- so the derived variables have

@@ -33,6 +33,15 @@ struct Mesh;
 struct Entity {
   Entity() = delete;
   explicit Entity(Mesh *mesh) : mesh_{mesh} {}
+  /* An Entity caches the Mesh it was constructed against, so a copy or a move
+     would silently keep pointing at the original: `auto z = mesh.zones;` would
+     hand back something whose ds() and comm() resolve to another mesh.  This is
+     also what makes Mesh non-relocatable -- the deletions there are the same
+     invariant stated where a reader of Mesh will meet it. */
+  Entity(Entity const &) = delete;
+  Entity &operator=(Entity const &) = delete;
+  Entity(Entity &&) = delete;
+  Entity &operator=(Entity &&) = delete;
   enum CommTypes {
     INTERNAL = 1, //!< Not on a communication boundary
     SOURCE, //!< The source entity in a group of shared copies
