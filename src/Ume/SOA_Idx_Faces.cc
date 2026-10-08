@@ -14,8 +14,9 @@
 */
 
 #include "Ume/SOA_Idx_Mesh.hh"
-#include "Ume/soa_idx_helpers.hh"
+#include "Ume/atomic_add.hh"
 #include "Ume/mem_exec_spaces.hh"
+#include "Ume/soa_idx_helpers.hh"
 #include <cassert>
 
 namespace Ume {
@@ -84,13 +85,8 @@ bool Faces::VAR_fcoord::init_() const {
       "VAR_fcoord-1", Kokkos::RangePolicy<HostExecSpace>(0, sl), [&](const int s) {
         if (h_smask(s)) {
           int const f = h_s2f(s);
-#if defined(UME_SERIAL)
-          h_fcoord(f) += h_pcoord(h_s2p1(s));
-          h_num_face_pts(f) += 1;
-#else
-          Kokkos::atomic_add(&h_fcoord(f), h_pcoord(h_s2p1(s)));
-          Kokkos::atomic_add(&h_num_face_pts(f), 1);
-#endif
+          ume_atomic_add(&h_fcoord(f), h_pcoord(h_s2p1(s)));
+          ume_atomic_add(&h_num_face_pts(f), 1);
         }
       });
   auto const &fmask{faces().mask};

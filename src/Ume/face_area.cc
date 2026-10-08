@@ -14,6 +14,7 @@
 */
 
 #include "Ume/face_area.hh"
+#include "Ume/atomic_add.hh"
 #include "Ume/mem_exec_spaces.hh"
 
 namespace Ume {
@@ -70,11 +71,7 @@ void calc_face_area(Mesh &mesh, DBLV_T &face_area) {
           int const f = d_s_to_f_map(s);
           if (d_face_comm_type(f) < 3) { // Internal or master face
             double const side_area = vectormag(d_surz(s)); // Flat area
-#if defined(UME_SERIAL)
-            d_face_area(f) += side_area;
-#else
-        Kokkos::atomic_add(&d_face_area(f), side_area);
-#endif
+            ume_atomic_add(&d_face_area(f), side_area);
           }
         }
       });

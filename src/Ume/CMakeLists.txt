@@ -29,6 +29,7 @@ set(UME_INCLUDE_FILES
   SOA_Idx_Iotas.hh
   Timer.hh
   VecN.hh
+  atomic_add.hh
   face_area.hh
   gradient.hh
   renumbering.hh

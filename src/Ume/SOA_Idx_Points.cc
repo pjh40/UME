@@ -14,8 +14,9 @@
 */
 
 #include "Ume/SOA_Idx_Mesh.hh"
-#include "Ume/soa_idx_helpers.hh"
+#include "Ume/atomic_add.hh"
 #include "Ume/mem_exec_spaces.hh"
+#include "Ume/soa_idx_helpers.hh"
 #include <cassert>
 #include <iostream>
 
@@ -112,13 +113,8 @@ bool Points::VAR_point_norm::init_() const {
           int const s2 = h_s2s2(s); // the corresponding real side
           int const p1 = h_s2p1(s2);
           int const p2 = h_s2p2(s2);
-#if defined(UME_SERIAL)
-          h_point_norm_k(p1) += h_side_surz(s2);
-          h_point_norm_k(p2) += h_side_surz(s2);
-#else
-          Kokkos::atomic_add(&h_point_norm_k(p1), h_side_surz(s2));
-          Kokkos::atomic_add(&h_point_norm_k(p2), h_side_surz(s2));
-#endif
+          ume_atomic_add(&h_point_norm_k(p1), h_side_surz(s2));
+          ume_atomic_add(&h_point_norm_k(p2), h_side_surz(s2));
         }
       });
 

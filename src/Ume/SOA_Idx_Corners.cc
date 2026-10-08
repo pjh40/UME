@@ -14,8 +14,9 @@
 */
 
 #include "Ume/SOA_Idx_Mesh.hh"
-#include "Ume/soa_idx_helpers.hh"
+#include "Ume/atomic_add.hh"
 #include "Ume/mem_exec_spaces.hh"
+#include "Ume/soa_idx_helpers.hh"
 
 namespace Ume {
 namespace SOA_Idx {
@@ -82,13 +83,8 @@ bool Corners::VAR_corner_vol::init_() const {
       [&](const int s) {
         if (h_smask(s) > 0) {
           double const hsv = 0.5 * h_side_vol(s);
-#if defined(UME_SERIAL)
-          h_corner_vol(h_s2c1(s)) += hsv;
-          h_corner_vol(h_s2c2(s)) += hsv;
-#else
-          Kokkos::atomic_add(&h_corner_vol(h_s2c1(s)), hsv);
-          Kokkos::atomic_add(&h_corner_vol(h_s2c2(s)), hsv);
-#endif
+          ume_atomic_add(&h_corner_vol(h_s2c1(s)), hsv);
+          ume_atomic_add(&h_corner_vol(h_s2c2(s)), hsv);
         }
       });
 
@@ -121,13 +117,9 @@ bool Corners::VAR_corner_csurf::init_() const {
   Kokkos::parallel_for("VAR_corner_csurf",
       Kokkos::RangePolicy<HostExecSpace>(0, sl), [&](const int s) {
         if (h_smask(s)) {
-#if defined(UME_SERIAL)
-          h_corner_csurf(h_s2c1(s)) += h_side_surf(s);
-          h_corner_csurf(h_s2c2(s)) -= h_side_surf(s);
-#else
-          Kokkos::atomic_add(&h_corner_csurf(h_s2c1(s)), h_side_surf(s));
-          Kokkos::atomic_sub(&h_corner_csurf(h_s2c2(s)), h_side_surf(s));
-#endif
+          ume_atomic_add(&h_corner_csurf(h_s2c1(s)), h_side_surf(s));
+          /* x + (-y) is x - y exactly in IEEE arithmetic. */
+          ume_atomic_add(&h_corner_csurf(h_s2c2(s)), h_side_surf(s) * -1.0);
         }
       });
 

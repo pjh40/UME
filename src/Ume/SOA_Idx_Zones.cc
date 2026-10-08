@@ -14,8 +14,9 @@
 */
 
 #include "Ume/SOA_Idx_Mesh.hh"
-#include "Ume/soa_idx_helpers.hh"
+#include "Ume/atomic_add.hh"
 #include "Ume/mem_exec_spaces.hh"
+#include "Ume/soa_idx_helpers.hh"
 #include <set>
 
 namespace Ume {
@@ -78,13 +79,8 @@ bool Zones::VAR_zcoord::init_() const {
       "VAR_zcoord-1", Kokkos::RangePolicy<HostExecSpace>(0, cl), [&](const int c) {
         if (h_cmask(c)) {
           int const z = h_c2z(c);
-#if defined(UME_SERIAL)
-          h_zcoord(z) += h_pcoord(h_c2p(c));
-          h_num_zone_pts(z) += 1;
-#else
-          Kokkos::atomic_add(&h_zcoord(z), h_pcoord(h_c2p(c)));
-          Kokkos::atomic_add(&h_num_zone_pts(z), 1);
-#endif
+          ume_atomic_add(&h_zcoord(z), h_pcoord(h_c2p(c)));
+          ume_atomic_add(&h_num_zone_pts(z), 1);
         }
       });
 
