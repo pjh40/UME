@@ -776,8 +776,7 @@ bool exhausted(std::istream &is) {
 /* Entity::write and Entity::read stream ten fields in a fixed order, and each
    entity wraps them in its own tag and maps.  Every entity is written alone
    and read into a fresh mesh, and compared field by field through
-   Entity::operator==.  Subset::operator== leaves out the subset's lsize, so
-   that is compared directly. */
+   Entity::operator==, whose subsets compare through Subset::operator==. */
 TEST_CASE("entity: write and read round trip every field", "[mesh][io]") {
   Bare_Mesh src;
   populate(src.mesh, true);
@@ -795,13 +794,11 @@ TEST_CASE("entity: write and read round trip every field", "[mesh][io]") {
     CHECK(copy.local_size() == original->local_size());
     CHECK(copy.size() == original->size());
     CHECK(copy == *original);
-    REQUIRE(copy.subsets.size() == original->subsets.size());
-    for (std::size_t j = 0; j < copy.subsets.size(); ++j)
-      CHECK(copy.subsets[j].lsize == original->subsets[j].lsize);
   }
 
   /* Positive control: a difference in any one of the fields that the
-     comparison above relies on makes the entities unequal. */
+     comparison above relies on, the subset fields among them, makes the
+     entities unequal. */
   using Change = void (*)(Ume::SOA_Idx::Entity &);
   std::pair<char const *, Change> const changes[] = {
       {"lsize",
@@ -818,8 +815,14 @@ TEST_CASE("entity: write and read round trip every field", "[mesh][io]") {
       {"myCpys", [](Ume::SOA_Idx::Entity &e) { ++e.myCpys.back().pe; }},
       {"mySrcs",
           [](Ume::SOA_Idx::Entity &e) { ++e.mySrcs.back().elements.back(); }},
-      {"subsets",
+      {"subset name",
+          [](Ume::SOA_Idx::Entity &e) { e.subsets.back().name += '_'; }},
+      {"subset lsize",
+          [](Ume::SOA_Idx::Entity &e) { ++e.subsets.back().lsize; }},
+      {"subset elements",
           [](Ume::SOA_Idx::Entity &e) { ++e.subsets.back().elements.back(); }},
+      {"subset mask",
+          [](Ume::SOA_Idx::Entity &e) { ++e.subsets.back().mask.back(); }},
   };
   std::stringstream zones;
   src.mesh.zones.write(zones);

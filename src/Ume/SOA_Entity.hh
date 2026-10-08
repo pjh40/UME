@@ -126,7 +126,8 @@ struct Entity {
     std::vector<int> elements;
     std::vector<short> mask;
     inline bool operator==(Subset const &rhs) const {
-      return (rhs.name == name && rhs.elements == elements && rhs.mask == mask);
+      return (rhs.name == name && rhs.lsize == lsize &&
+          rhs.elements == elements && rhs.mask == mask);
     }
   };
 
