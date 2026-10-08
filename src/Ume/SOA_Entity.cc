@@ -111,6 +111,8 @@ void Entity::resize(int const local, int const total, int const ghost) {
 
 template <typename FT> void Entity::gather(Comm::Op const op, FT &field) {
   assert(static_cast<int>(field.size()) == size());
+  if (!comm().does_exchanges())
+    return;
   Comm::Buffers<FT> cpyBufs(myCpys);
   Comm::Buffers<FT> srcBufs(mySrcs);
   cpyBufs.pack(field);
@@ -120,6 +122,8 @@ template <typename FT> void Entity::gather(Comm::Op const op, FT &field) {
 
 template <typename FT> void Entity::scatter(FT &field) {
   assert(static_cast<int>(field.size()) == size());
+  if (!comm().does_exchanges())
+    return;
   Comm::Buffers<FT> cpyBufs(myCpys);
   Comm::Buffers<FT> srcBufs(mySrcs);
   srcBufs.pack(field);
@@ -129,6 +133,8 @@ template <typename FT> void Entity::scatter(FT &field) {
 
 template <typename FT> void Entity::gathscat(Comm::Op const op, FT &field) {
   assert(static_cast<int>(field.size()) == size());
+  if (!comm().does_exchanges())
+    return;
   Comm::Buffers<FT> cpyBufs(myCpys);
   Comm::Buffers<FT> srcBufs(mySrcs);
   cpyBufs.pack(field);

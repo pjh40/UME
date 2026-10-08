@@ -38,6 +38,12 @@ public:
   virtual void exchange(Buffers<DS_Types::VEC3V_T> const & /*sends*/,
       Buffers<DS_Types::VEC3V_T> & /*recvs*/) {}
 
+  //! Whether `exchange` moves data between partitions
+  /*! When false, `exchange` leaves the receive buffers as they were, and
+      Entity::gather, scatter and gathscat leave the field untouched rather
+      than unpack those buffers over it. */
+  virtual bool does_exchanges() const { return false; }
+
   //! Return some sort of identifier for this node in the Transport graph
   virtual int id() const { return -1; }
 

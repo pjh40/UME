@@ -13,6 +13,7 @@ endif()
 add_executable(ume_tests
   test_comm_buffers.cc
   test_datastore.cc
+  test_entity_comm.cc
   test_io.cc
   test_utils.cc
   test_vecn.cc

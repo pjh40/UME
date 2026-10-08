@@ -118,6 +118,8 @@ TEST_CASE("comm MPI: exchange with empty remotes and map virtual ranks",
     "[comm][mpi]") {
   Comm::MPI comm(nullptr, nullptr);
   int const me = comm.pe();
+  // Entity::gather, scatter and gathscat skip a transport that does not.
+  CHECK(comm.does_exchanges());
 
   /* An empty remote at the end of the list has buf_offset == buf.size(), and
      one alone has an empty buffer: in both, the remote's start address has to
