@@ -18,7 +18,6 @@
 #include "Ume/Comm_Neighbors.hh"
 #include "Ume/Comm_Transport.hh"
 #include "Ume/Datastore.hh"
-#include "Ume/Mesh_Base.hh"
 #include <iosfwd>
 #include <ranges>
 #include <string>
@@ -168,20 +167,21 @@ struct Entity {
   virtual void resize(int const local, int const total, int const ghost);
   bool operator==(Entity const &rhs) const;
 
+  /* ds() and comm() are defined in SOA_Entity.cc, where Mesh is complete:
+     here it is only forward-declared, and a cast to its Mesh_Base base would
+     have to be a reinterpret_cast that ignores the base's offset. */
   //! Return the Datastore of the mesh that this Entity belongs to
-  Datastore &ds() { return *(((Mesh_Base *)mesh_)->ds); }
+  Datastore &ds();
   //! Return the Datastore of the mesh that this Entity belongs to (const)
-  Datastore const &ds() const { return *(((Mesh_Base *)mesh_)->ds); }
+  Datastore const &ds() const;
   //! Return the Mesh that this Entity belongs to
   constexpr Mesh &mesh() { return *mesh_; }
   //! Return the Mesh that this Entity belongs to (const)
   constexpr Mesh const &mesh() const { return *mesh_; }
   //! Return the Transport that this Entity belongs to
-  Ume::Comm::Transport &comm() { return *(((Mesh_Base *)mesh_)->comm); }
+  Ume::Comm::Transport &comm();
   //! Return the Transport that this Entity belongs to (const)
-  Ume::Comm::Transport const &comm() const {
-    return *(((Mesh_Base *)mesh_)->comm);
-  }
+  Ume::Comm::Transport const &comm() const;
 
 private:
   Mesh *mesh_;

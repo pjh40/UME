@@ -104,6 +104,32 @@ TEST_CASE("mesh: entities point back at their own mesh", "[mesh]") {
   CHECK(&other.zones.mesh() != &mesh);
 }
 
+TEST_CASE("mesh: entity ds() and comm() are the owning mesh's", "[mesh]") {
+  /* Entity::ds() and comm() reach Mesh_Base through the Mesh back-pointer;
+     the conversion has to land on the Mesh_Base subobject of this mesh. */
+  Mesh mesh;
+  Ume::Comm::Dummy_Transport transport;
+  mesh.comm = &transport;
+  Ume::SOA_Idx::Entity const *const entities[] = {&mesh.corners, &mesh.edges,
+      &mesh.faces, &mesh.points, &mesh.sides, &mesh.zones, &mesh.iotas};
+  for (Ume::SOA_Idx::Entity const *e : entities) {
+    CHECK(&e->ds() == mesh.ds.get());
+    CHECK(&e->comm() == &transport);
+  }
+  /* The non-const overloads resolve the same way. */
+  CHECK(&mesh.zones.ds() == mesh.ds.get());
+  CHECK(&mesh.zones.comm() == &transport);
+
+  /* Positive control: another mesh, with its own Datastore and Transport, is
+     not this one, so the comparisons distinguish meshes. */
+  Mesh other;
+  Ume::Comm::Dummy_Transport other_transport;
+  other.comm = &other_transport;
+  CHECK(&other.zones.ds() != mesh.ds.get());
+  CHECK(&other.zones.comm() != &transport);
+  CHECK(&other.zones.ds() == other.ds.get());
+}
+
 TEST_CASE(
     "mesh: sorting meshes held by pointer keeps them addressable", "[mesh]") {
   /* The shape of read_meshes() in ume_serial.cc: meshes arriving out of rank

@@ -13,6 +13,8 @@
   \file Ume/SOA_Entity.cc
 */
 #include "Ume/SOA_Entity.hh"
+#include "Ume/Mesh_Base.hh"
+#include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/utils.hh"
 #include <cassert>
 
@@ -97,6 +99,20 @@ bool Entity::operator==(Entity const &rhs) const {
       src_pe == rhs.src_pe && src_idx == rhs.src_idx &&
       ghost_mask == rhs.ghost_mask && myCpys == rhs.myCpys &&
       mySrcs == rhs.mySrcs && subsets == rhs.subsets);
+}
+
+Datastore &Entity::ds() { return *static_cast<Mesh_Base *>(mesh_)->ds; }
+
+Datastore const &Entity::ds() const {
+  return *static_cast<Mesh_Base const *>(mesh_)->ds;
+}
+
+Ume::Comm::Transport &Entity::comm() {
+  return *static_cast<Mesh_Base *>(mesh_)->comm;
+}
+
+Ume::Comm::Transport const &Entity::comm() const {
+  return *static_cast<Mesh_Base const *>(mesh_)->comm;
 }
 
 void Entity::resize(int const local, int const total, int const ghost) {
