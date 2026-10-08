@@ -32,6 +32,7 @@
 #include <random>
 #include <ranges>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using Ume::SOA_Idx::Mesh;
@@ -645,4 +646,53 @@ TEST_CASE("renumber_p numbers every disjoint piece of the mesh",
   for (int p : {0, 1, 2})
     unreached[p] = -1;
   CHECK_FALSE(is_permutation_of_first(unreached));
+}
+
+namespace {
+
+/* Every Entity member of `mesh`, named, in declaration order. */
+std::array<std::pair<char const *, Ume::SOA_Idx::Entity *>, 7> entities_of(
+    Mesh &mesh) {
+  return {
+      {{"points", &mesh.points}, {"edges", &mesh.edges}, {"faces", &mesh.faces},
+          {"sides", &mesh.sides}, {"corners", &mesh.corners},
+          {"zones", &mesh.zones}, {"iotas", &mesh.iotas}}};
+}
+
+} // namespace
+
+/* Mesh::operator== is what a write/read round trip is checked with, so a
+   difference in any one entity has to make two meshes unequal.  Each entity in
+   turn is given a mask entry the other mesh does not have, and then the face
+   maps, which only Faces compares, are given an entry each. */
+TEST_CASE("mesh: equality compares every entity", "[mesh]") {
+  Bare_Mesh lhs;
+  Bare_Mesh rhs;
+  for (Mesh *const m : {&lhs.mesh, &rhs.mesh}) {
+    for (auto const &[name, e] : entities_of(*m)) {
+      e->resize(1, 1, 0);
+      e->mask[0] = 1;
+    }
+    /* A default-constructed Vec3 is uninitialized. */
+    m->ds->access_vec3v("pcoord")[0] = Ume::Vec3(0.0);
+  }
+  REQUIRE(lhs.mesh == rhs.mesh);
+
+  for (auto const &[name, e] : entities_of(rhs.mesh)) {
+    INFO("entity " << name);
+    e->mask[0] = 0;
+    CHECK_FALSE(lhs.mesh == rhs.mesh);
+    e->mask[0] = 1;
+    REQUIRE(lhs.mesh == rhs.mesh);
+  }
+
+  for (char const *const map : {"m:f>z1", "m:f>z2"}) {
+    INFO("map " << map);
+    auto &face_to_zone = rhs.mesh.ds->access_intv(map);
+    REQUIRE(face_to_zone.size() == 1);
+    face_to_zone[0] = 1;
+    CHECK_FALSE(lhs.mesh == rhs.mesh);
+    face_to_zone[0] = 0;
+    REQUIRE(lhs.mesh == rhs.mesh);
+  }
 }

@@ -101,8 +101,8 @@ void Mesh::read(std::istream &is) {
 bool Mesh::operator==(Mesh const &rhs) const {
   return ivtag == rhs.ivtag && mype == rhs.mype && numpe == rhs.numpe &&
       geo == rhs.geo && dump_iotas == rhs.dump_iotas && points == rhs.points &&
-      edges == rhs.edges && sides == rhs.sides && corners == rhs.corners &&
-      zones == rhs.zones && iotas == rhs.iotas;
+      edges == rhs.edges && faces == rhs.faces && sides == rhs.sides &&
+      corners == rhs.corners && zones == rhs.zones && iotas == rhs.iotas;
 }
 
 void Mesh::print_stats(std::ostream &os) const {
