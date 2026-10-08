@@ -14,10 +14,12 @@
 */
 
 #include "Ume/utils.hh"
+#include <chrono>
 #include <cstdlib>
 #include <format>
 #include <iostream>
 #include <sys/types.h>
+#include <thread>
 #include <unistd.h>
 
 #ifdef HAVE_MPI
@@ -27,7 +29,9 @@
 namespace Ume {
 
 void debug_attach_point(int const mype) {
-  int release = 0;
+  // volatile: the debugger writes this behind the compiler's back. Without it
+  // the loop below compiles to an unconditional one at -O2.
+  volatile int release = 0;
   char const *const envvalue = std::getenv("UME_DEBUG_RANK");
   if (envvalue == nullptr)
     return;
@@ -41,8 +45,9 @@ void debug_attach_point(int const mype) {
               << "`setvar release = 1`\n"
               << std::endl;
 
+    using namespace std::chrono_literals;
     while (!release) {
-      sleep(5);
+      std::this_thread::sleep_for(5s);
     }
   }
 #ifdef HAVE_MPI
