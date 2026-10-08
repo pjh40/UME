@@ -946,7 +946,10 @@ TEST_CASE("mesh: read refuses a copy listed twice", "[mesh][io][comm]") {
     for (auto const &[what, change, refused] : cases) {
       Bare_Mesh src;
       populate(src.mesh, true);
-      auto const &[name, entity] = entities_of(src.mesh)[i];
+      /* Named, so the binding below does not refer into a temporary array
+         destroyed at the end of its statement. */
+      auto const entities = entities_of(src.mesh);
+      auto const &[name, entity] = entities[i];
       INFO("entity " << name << ", changed " << what);
       change(*entity);
       std::stringstream stream;
