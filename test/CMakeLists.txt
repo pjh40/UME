@@ -96,6 +96,47 @@ set_tests_properties(scale_mesh_unwritable_output PROPERTIES
     "Unable to open file \"[^\"]*/unwritable\\.00001\\.00000\\.ume\" for writing\\.[\r\n]+Aborting\\."
   TIMEOUT 90)
 
+# Writes a one-partition mesh of points at (x, 0, 0), or prints the points of
+# one; the stitch tests below use it on both sides of scale_mesh.
+add_executable(point_mesh point_mesh.cc)
+target_link_libraries(point_mesh PRIVATE Ume)
+target_compile_definitions(point_mesh PRIVATE ${COMMON_COMPILE_DEFINITIONS})
+
+# Scale 2 stitches one copy of the mesh to its +x side, translated by the
+# mesh's x extent.  The extent was taken as the largest x, which is right
+# only when the smallest is 0: on [-1, 0] the copy landed on its original, and
+# on [1, 3] it left a gap of 1.  Each test writes the mesh on the given
+# coordinates, scales it, and matches every point of the result: all of an
+# original, and the x of a copy (scale_mesh sets only the stitched component
+# of a copied point; the other two are whatever the resize left there).
+function(add_scale_mesh_stitch_test name expected)
+  set(_basename ${_scale_mesh_dir}/${name})
+  add_test(NAME scale_mesh_write_${name}_mesh
+    COMMAND point_mesh write ${_basename}.00000.ume ${ARGN})
+  set_tests_properties(scale_mesh_write_${name}_mesh PROPERTIES
+    FIXTURES_SETUP scale_mesh_${name}_input)
+  add_test(NAME scale_mesh_stitch_${name}
+    COMMAND scale_mesh ${_basename} 2)
+  set_tests_properties(scale_mesh_stitch_${name} PROPERTIES
+    FIXTURES_REQUIRED scale_mesh_${name}_input
+    FIXTURES_SETUP scale_mesh_${name}_output
+    TIMEOUT 90)
+  add_test(NAME scale_mesh_stitched_${name}_points
+    COMMAND point_mesh print ${_basename}.00002.00000.ume)
+  set_tests_properties(scale_mesh_stitched_${name}_points PROPERTIES
+    FIXTURES_REQUIRED scale_mesh_${name}_output
+    PASS_REGULAR_EXPRESSION "^${expected}$")
+endfunction()
+
+set(_p "[\r\n]+point")
+set(_yz "[^\r\n]*")
+add_scale_mesh_stitch_test(negative
+  "point 0: -1 0 0${_p} 1: 0 0 0${_p} 2: 0 ${_yz}${_p} 3: 1 ${_yz}[\r\n]*"
+  -1 0)
+add_scale_mesh_stitch_test(positive
+  "point 0: 1 0 0${_p} 1: 3 0 0${_p} 2: 3 ${_yz}${_p} 3: 5 ${_yz}[\r\n]*"
+  1 3)
+
 # UME driver startup tests
 
 # ume_mpi run as an MPI singleton: a missing basename, one that the

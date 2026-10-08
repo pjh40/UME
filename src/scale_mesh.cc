@@ -26,9 +26,11 @@
 #include "Ume/DS_Types.hh"
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/utils.hh"
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <ranges>
 #include <string>
 
 bool read_mesh(
@@ -111,19 +113,15 @@ bool read_mesh(
   return true;
 }
 
-double get_bounding_dim(Ume::SOA_Idx::Mesh &mesh, int dim) {
+//! The extent, max - min, of the point coordinates along `dim`; 0 if none.
+double get_extent(Ume::SOA_Idx::Mesh const &mesh, int const dim) {
   auto const &pcoord = mesh.ds->caccess_vec3v("pcoord");
-
-  double num_points = mesh.points.size();
-  double p_max = 0;
-  for (int p = 0; p < num_points; ++p) {
-    double x = pcoord[p][dim];
-
-    if (x > p_max)
-      p_max = x;
-  }
-
-  return p_max;
+  if (pcoord.empty())
+    return 0.0;
+  auto const [lo, hi] = std::ranges::minmax(pcoord |
+      std::views::transform(
+          [dim](Ume::DS_Types::VEC3_T const &p) { return p[dim]; }));
+  return hi - lo;
 }
 
 void double_entity_count(Ume::SOA_Idx::Entity &entity) {
@@ -154,7 +152,8 @@ void update_entity(Ume::DS_Types::INTV_T &map, const int iter_start,
 void stitch(Ume::SOA_Idx::Mesh &mesh, const int dim) {
   //! ----- Points -----
   // Double Number of Points
-  double p_max = get_bounding_dim(mesh, dim);
+  // The copy sits against the original's +dim face, whatever its position.
+  double const extent = get_extent(mesh, dim);
 
   int original_points_total = mesh.points.size();
   int new_points_total = original_points_total * 2;
@@ -163,7 +162,7 @@ void stitch(Ume::SOA_Idx::Mesh &mesh, const int dim) {
   // Update Point Coordinates of new Points
   auto &new_pcoords = mesh.ds->access_vec3v("pcoord");
   update_coords(
-      new_pcoords, original_points_total, new_points_total, p_max, dim);
+      new_pcoords, original_points_total, new_points_total, extent, dim);
 
   //! ----- Zones -----
   // Double Number of Zones
