@@ -21,6 +21,7 @@
 #include "Ume/face_area.hh"
 #include "Ume/gradient.hh"
 #include "Ume/mem_exec_spaces.hh"
+#include "Ume/renumbering.hh"
 #include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
@@ -442,4 +443,119 @@ TEST_CASE(
   CHECK(indices_of(points.ghost_indices()) == std::vector<int>{4});
   CHECK(points.ghost_size() == 1);
   CHECK(indices_of(points.ghost_indices_offset()) == std::vector<int>{0});
+}
+
+namespace {
+
+/* Whether `numbers` holds each of 0, 1, ..., size() - 1 exactly once. */
+bool is_permutation_of_first(std::vector<int> numbers) {
+  std::ranges::sort(numbers);
+  return std::ranges::equal(
+      numbers, std::views::iota(0, static_cast<int>(numbers.size())));
+}
+
+} // namespace
+
+/* new_numbering is a counting sort: it numbers the live x in the order of the
+   y each one hangs on, and the x on one y consecutively, in their own order.
+   Seven sides hang on three points here, and side 5 is null: the six live
+   sides must get each of 0, ..., 5 once, and the null one keeps its value. */
+TEST_CASE("new_numbering numbers the live entities as a permutation",
+    "[mesh][renumbering]") {
+  Bare_Mesh bare;
+  auto &x = bare.mesh.sides;
+  auto const &y = bare.mesh.points;
+  x.resize(7, 7, 0);
+  bare.mesh.points.resize(3, 3, 0);
+  std::ranges::fill(x.mask, short{1});
+  x.mask[5] = 0;
+  Ume::DS_Types::INTV_T const x_to_y{2, 0, 1, 0, 2, 2, 1};
+
+  int x_max = 0;
+  Ume::DS_Types::INTV_T x_to_xnew(7, -1);
+  Ume::new_numbering(x, y, x_to_y, x_max, x_to_xnew);
+
+  /* Point 0 holds sides 1 and 3, point 1 sides 2 and 6, point 2 sides 0
+     and 4. */
+  CHECK(x_to_xnew == Ume::DS_Types::INTV_T{4, 0, 2, 1, 5, -1, 3});
+  CHECK(x_max == 5);
+  std::vector<int> live;
+  for (int s : x.local_indices())
+    if (x.mask[s] != 0)
+      live.push_back(x_to_xnew[s]);
+  CHECK(is_permutation_of_first(live));
+
+  /* Positive control: giving every x on one y the same number, as
+     new_numbering used to, is not a permutation. */
+  CHECK_FALSE(is_permutation_of_first({4, 0, 2, 0, 4, 2}));
+}
+
+/* An empty rank has nothing to number, and numbering it must not fail. */
+TEST_CASE(
+    "new_numbering numbers nothing on an empty rank", "[mesh][renumbering]") {
+  Bare_Mesh bare;
+  auto &x = bare.mesh.sides;
+  auto const &y = bare.mesh.points;
+  REQUIRE(x.size() == 0);
+  REQUIRE(y.size() == 0);
+
+  int x_max = -1;
+  Ume::DS_Types::INTV_T x_to_xnew;
+  Ume::new_numbering(x, y, Ume::DS_Types::INTV_T{}, x_max, x_to_xnew);
+  CHECK(x_max == -1);
+
+  /* Positive control: one live x on one y is numbered 0, which moves
+     x_max. */
+  x.resize(1, 1, 0);
+  bare.mesh.points.resize(1, 1, 0);
+  x.mask[0] = 1;
+  x_to_xnew.assign(1, -1);
+  Ume::new_numbering(x, y, Ume::DS_Types::INTV_T{0}, x_max, x_to_xnew);
+  CHECK(x_to_xnew == Ume::DS_Types::INTV_T{0});
+  CHECK(x_max == 0);
+}
+
+/* The point wavefront starts again once per disjoint piece of a rank's mesh,
+   from the unnumbered point with the most sides.  Here the pieces are a fan,
+   whose hub, point 3, has the most sides and seeds first, and a triangle on
+   points 0, 1, 2, whose best seed is point 0, the lowest-numbered of three
+   equals.  Every point must get a number, each of 0, ..., 6 once. */
+TEST_CASE("renumber_p numbers every disjoint piece of the mesh",
+    "[mesh][renumbering]") {
+  constexpr std::array<std::array<int, 2>, 7> side_points{
+      {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {3, 5}, {3, 6}, {4, 5}}};
+  constexpr int npoint = 7;
+  constexpr int nside = static_cast<int>(side_points.size());
+  constexpr int niota = 2 * nside;
+
+  Bare_Mesh bare;
+  Mesh &mesh = bare.mesh;
+  mesh.points.resize(npoint, npoint, 0);
+  mesh.sides.resize(nside, nside, 0);
+  mesh.iotas.resize(niota, niota, 0);
+  std::ranges::fill(mesh.points.mask, short{1});
+  std::ranges::fill(mesh.sides.mask, short{1});
+  std::ranges::fill(mesh.iotas.mask, short{1});
+
+  /* Iota 2s is side s at its first point, iota 2s + 1 at its second. */
+  auto &s_to_p1 = mesh.ds->access_intv("m:s>p1");
+  auto &s_to_p2 = mesh.ds->access_intv("m:s>p2");
+  auto &a_to_p = mesh.ds->access_intv("m:a>p");
+  auto &a_to_s = mesh.ds->access_intv("m:a>s");
+  for (int s = 0; s < nside; ++s) {
+    s_to_p1[s] = a_to_p[2 * s] = side_points[s][0];
+    s_to_p2[s] = a_to_p[2 * s + 1] = side_points[s][1];
+    a_to_s[2 * s] = a_to_s[2 * s + 1] = s;
+  }
+
+  Ume::DS_Types::INTV_T const p_to_pnew = Ume::renumber_p(mesh);
+  REQUIRE(p_to_pnew.size() == npoint);
+  CAPTURE(p_to_pnew);
+  CHECK(is_permutation_of_first(p_to_pnew));
+
+  /* Positive control: the triangle left unnumbered is not a permutation. */
+  Ume::DS_Types::INTV_T unreached = p_to_pnew;
+  for (int p : {0, 1, 2})
+    unreached[p] = -1;
+  CHECK_FALSE(is_permutation_of_first(unreached));
 }

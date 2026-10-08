@@ -39,7 +39,7 @@ void renumber_mesh(Mesh &mesh) {
 }
 
 /* Renumber_P[kkpll]-->Renumb_P */
-void renumber_p(Mesh &mesh) {
+INTV_T renumber_p(Mesh &mesh) {
   /* Get sizes for general use. */
   int const pll = mesh.points.size();
   int const pgll = mesh.points.ghost_size();
@@ -186,7 +186,7 @@ void renumber_p(Mesh &mesh) {
         if (num_p_currfront == 0 && (pnew + 1) != totp) {
           /* Find a new seed point. */
           { /* Wave_seed */
-            pseed = 0;
+            pseed = INVALID_INDEX;
             int max_s = 0, num_s;
 
             /* Take as the seed point the inactive point with the
@@ -204,7 +204,7 @@ void renumber_p(Mesh &mesh) {
           }
 
           /* Rebuild front for next pass if not finished yet. */
-          if (pseed != 0) {
+          if (pseed != INVALID_INDEX) {
             num_p_currfront = 1;
             currfront_p[START_INDEX] = pseed;
             pnew += 1;
@@ -217,6 +217,8 @@ void renumber_p(Mesh &mesh) {
 
   { /* ReshapeP() */
   }
+
+  return p_to_pnew_map;
 }
 
 /* Renumber_S[kksll]-->Renumb_S */
