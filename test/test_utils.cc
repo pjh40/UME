@@ -9,11 +9,14 @@
   NOTICE.md file.
 */
 
+#include "Ume/Timer.hh"
 #include "Ume/VecN.hh"
 #include "Ume/utils.hh"
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 template <class T> void wr(T const &in_val, T &out_val) {
@@ -152,4 +155,29 @@ TEST_CASE("mesh_filename with a 200-character basename", "[utils]") {
   // A field wider than five digits widens rather than truncates, as %05d did.
   REQUIRE(Ume::mesh_filename(base, 123456) == base + ".123456.ume");
   REQUIRE(Ume::mesh_filename(base, 0, 131072) == base + ".131072.00000.ume");
+}
+
+TEST_CASE("Timer accumulates elapsed time across intervals", "[utils]") {
+  // Timer.hh asserts at compile time that its clock is steady; this checks
+  // that the timer still measures what it did on the clock it replaced.
+  using namespace std::chrono_literals;
+  Ume::Timer t;
+  REQUIRE(t.seconds() == 0.0);
+
+  t.start();
+  std::this_thread::sleep_for(10ms);
+  t.stop();
+  const double first = t.seconds();
+  REQUIRE(first >= 0.010);
+
+  t.start();
+  std::this_thread::sleep_for(10ms);
+  t.stop();
+  REQUIRE(t.seconds() >= first + 0.010);
+
+  // Positive control for the zero above: the time just accumulated is what
+  // clear() discards.
+  REQUIRE(t.seconds() > 0.0);
+  t.clear();
+  REQUIRE(t.seconds() == 0.0);
 }
