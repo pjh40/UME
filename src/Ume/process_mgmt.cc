@@ -87,11 +87,17 @@ void show_backtrace() {
 #endif
 }
 
-void halt_with_backtrace(char const msg[], bool const show_bt) {
+/* Flush, so that the message precedes anything finalize() writes to stderr and
+ * survives a later abort(), which need not flush stdio buffers (glibc's does
+ * not): stdout is fully buffered when redirected to a file or pipe. */
+void report_error(char const msg[], bool const show_bt) {
   printf("\n%s\n", msg);
   if (show_bt)
     show_backtrace();
+  fflush(stdout);
+}
 
+void halt() {
 #ifdef HAVE_MPI
   int mpi_is_initialized, mpi_is_finalized, err = 0;
   MPI_Initialized(&mpi_is_initialized);
@@ -163,10 +169,13 @@ void finalize() {
 
 /* With error condition and backtrace, abort the job (if have MPI)
  * or process exit (if no MPI). This is an asynchronous operation:
- * all calling processes will write to standard out. */
+ * all calling processes will write to standard out.
+ * Report before finalizing: the memory pool's Finalize asserts that no claims
+ * are outstanding, which pool exhaustion leaves behind in a Debug build. */
 extern "C" void error_stop(char const msg[]) {
+  report_error(msg, true);
   finalize();
-  halt_with_backtrace(msg, true);
+  halt();
 }
 
 } // namespace Ume
