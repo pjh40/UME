@@ -57,6 +57,36 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
     )
 endif()
 
+# error_stop tests
+
+# Pool exhaustion has to print its message.  error_stop once finalized first,
+# and the pool's Finalize asserts that no claims are outstanding, which the
+# exhaustion leaves behind: a Debug build died on the assertion and the
+# message that explained it never printed.  With a 2 MB pool the same probe's
+# claims fit, and the message must not appear.
+add_executable(error_stop_probe error_stop_probe.cc)
+target_link_libraries(error_stop_probe PRIVATE Ume)
+target_compile_definitions(error_stop_probe PRIVATE
+  ${COMMON_COMPILE_DEFINITIONS})
+set(_error_stop_check
+  -DPROBE=$<TARGET_FILE:error_stop_probe>
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_error_stop.cmake)
+add_test(NAME error_stop_pool_exhausted
+  COMMAND ${CMAKE_COMMAND}
+    -DPOOL_MB=1
+    "-DEXPECT=Memory pool cannot claim memory\\."
+    "-DREJECT=both claims fit"
+    ${_error_stop_check})
+add_test(NAME error_stop_pool_fits
+  COMMAND ${CMAKE_COMMAND}
+    -DPOOL_MB=2
+    -DEXPECT_SUCCESS=ON
+    "-DEXPECT=error_stop_probe: both claims fit"
+    "-DREJECT=Memory pool cannot claim memory"
+    ${_error_stop_check})
+set_tests_properties(error_stop_pool_exhausted error_stop_pool_fits
+  PROPERTIES TIMEOUT 90)
+
 # Driver test meshes
 
 # Writes a one-partition mesh holding only zones with the given masks; the

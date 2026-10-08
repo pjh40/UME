@@ -33,7 +33,6 @@ static bool ume_is_initialized = false;
 [[maybe_unused]] static bool ume_is_finalized = false;
 
 namespace {
-extern "C" {
 
 void show_backtrace() {
 #ifndef __CUDACC__
@@ -113,8 +112,6 @@ void halt() {
   std::exit(EXIT_FAILURE);
 #endif
 }
-
-} // extern "C"
 
 std::optional<size_t> get_env_size(char const name[]) {
   if (char const *const s = std::getenv(name)) {
