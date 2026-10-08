@@ -409,6 +409,40 @@ add_test(NAME txt2bin_point_mesh
     "-DREJECT=Unable to"
     ${_exit_status_check})
 set_tests_properties(txt2bin_point_mesh PROPERTIES TIMEOUT 90)
+
+# Two damaged copies of the same mesh, which txt2bin has to reject with a
+# message naming what it found.  truncated.txt stops after the second tag: the
+# tag reader took the trailing ':' and ' ' off an empty tag with back(), which
+# a Debug build stopped at as an assertion.  long_line.txt has a "Ghost Points"
+# header line 300 characters too long: the line reader read into a 256-byte
+# buffer, so its message showed the first 255 and lost the rest, here "END".
+# txt2bin_point_mesh, the undamaged file, is the control for both.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${_txt2bin_input})
+file(STRINGS ${_txt2bin_input} _txt2bin_head LIMIT_COUNT 2)
+list(JOIN _txt2bin_head "\n" _txt2bin_head)
+file(WRITE ${_txt2bin_dir}/truncated.txt "${_txt2bin_head}\n")
+file(READ ${_txt2bin_input} _txt2bin_text)
+string(REPEAT "0" 300 _txt2bin_pad)
+string(REPLACE "\nGhost Points\n" "\nGhost Points${_txt2bin_pad}END\n"
+  _txt2bin_long "${_txt2bin_text}")
+file(WRITE ${_txt2bin_dir}/long_line.txt "${_txt2bin_long}")
+add_test(NAME txt2bin_truncated_input
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:txt2bin>
+    "-DARGS=${_txt2bin_dir}/truncated.txt$<SEMICOLON>${_txt2bin_dir}/truncated.ume"
+    -DSTATUS=1
+    "-DEXPECT=Expecting tag \"This rank\", got \"\""
+    ${_exit_status_check})
+add_test(NAME txt2bin_long_line
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:txt2bin>
+    "-DARGS=${_txt2bin_dir}/long_line.txt$<SEMICOLON>${_txt2bin_dir}/long_line.ume"
+    -DSTATUS=1
+    "-DEXPECT=Expecting line \"Ghost Points\", got \"Ghost Points0+END"
+    ${_exit_status_check})
+set_tests_properties(txt2bin_truncated_input txt2bin_long_line
+  PROPERTIES TIMEOUT 90)
 if(UNIX)
   set(_size_limited_args
     -c "trap '' XFSZ && ulimit -f 0 && exec \"$0\" \"$@\""

@@ -15,7 +15,6 @@
 
 #include <istream>
 #include <limits>
-#include <memory>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -56,9 +55,8 @@ inline void read_bin<std::string>(std::istream &is, std::string &data) {
   if (len == 0) {
     data.clear();
   } else {
-    std::unique_ptr<char[]> buf(new char[len]);
-    is.read(buf.get(), len);
-    data = std::string{buf.get(), len};
+    data.resize(len);
+    is.read(data.data(), static_cast<std::streamsize>(len));
   }
 }
 

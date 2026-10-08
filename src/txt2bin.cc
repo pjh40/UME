@@ -20,10 +20,10 @@
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/Timer.hh"
 #include "Ume/utils.hh"
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 
 using namespace Ume::SOA_Idx;
 using Ume::skip_line;
@@ -114,22 +114,33 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-int read_tag(std::istream &is, char const *const expect) {
-  char tagname[25];
-  is.get(tagname, 23);
-  std::string ts(tagname);
+namespace {
 
-  while (ts.back() == ':' || ts.back() == ' ')
-    ts.pop_back();
-  if (ts != std::string(expect)) {
-    std::cerr << "Expecting tag \"" << expect << "\", got \"" << ts << "\""
+//! Width of the tag column, which "Has MPI connectivity: " fills.
+constexpr std::size_t tag_width{22};
+
+/* Read the tag column and require that, less its trailing ':' and blanks, it
+   is `expect`. */
+void expect_tag(std::istream &is, std::string_view const expect) {
+  std::string tag(tag_width + 1, '\0');
+  is.get(tag.data(), static_cast<std::streamsize>(tag.size()));
+  tag.resize(static_cast<std::size_t>(is.gcount()));
+  tag.erase(tag.find_last_not_of(": ") + 1);
+  if (tag != expect) {
+    std::cerr << "Expecting tag \"" << expect << "\", got \"" << tag << "\""
               << std::endl;
     exit(1);
   }
+}
+
+} // namespace
+
+int read_tag(std::istream &is, char const *const expect) {
+  expect_tag(is, expect);
   int val{-1};
   is >> val;
   if (!is) {
-    std::cerr << "Didn't find an integer after tag \"" << ts << "\""
+    std::cerr << "Didn't find an integer after tag \"" << expect << "\""
               << std::endl;
     exit(1);
   }
@@ -143,23 +154,11 @@ int read_vtag(std::istream &is, char const *const expect) {
   if (c1 != 'I')
     return UME_VERSION_1;
 
-  char tagname[25];
-  is.get(tagname, 23);
-  std::string ts(tagname);
-
-  while (ts.back() == ':' || ts.back() == ' ')
-    ts.pop_back();
-
-  if (ts != std::string(expect)) {
-    std::cerr << "Expecting tag \"" << expect << "\", got \"" << ts << "\""
-              << std::endl;
-    exit(EXIT_FAILURE);
-  }
-
+  expect_tag(is, expect);
   int val = -1;
   is >> val;
   if (!is) {
-    std::cerr << "Didn't find an integer after tag \"" << ts << "\""
+    std::cerr << "Didn't find an integer after tag \"" << expect << "\""
               << std::endl;
     exit(EXIT_FAILURE);
   }
@@ -168,23 +167,11 @@ int read_vtag(std::istream &is, char const *const expect) {
 }
 
 bool read_bool_tag(std::istream &is, char const *const expect) {
-  char tagname[25];
-  is.get(tagname, 23);
-  std::string ts(tagname);
-
-  while (ts.back() == ':' || ts.back() == ' ')
-    ts.pop_back();
-
-  if (ts != std::string(expect)) {
-    std::cerr << "Expecting tag \"" << expect << "\", got \"" << ts << "\""
-              << std::endl;
-    exit(EXIT_FAILURE);
-  }
-
+  expect_tag(is, expect);
   bool val = false;
   is >> std::boolalpha >> val;
   if (!is) {
-    std::cerr << "Didn't find an integer after tag \"" << ts << "\""
+    std::cerr << "Didn't find an integer after tag \"" << expect << "\""
               << std::endl;
     exit(EXIT_FAILURE);
   }
@@ -193,33 +180,21 @@ bool read_bool_tag(std::istream &is, char const *const expect) {
 }
 
 std::string read_tag_str(std::istream &is, char const *const expect) {
-  char tagname[25];
-  is.get(tagname, 23);
-  std::string ts(tagname);
-
-  while (ts.back() == ':' || ts.back() == ' ')
-    ts.pop_back();
-  if (ts != std::string(expect)) {
-    std::cerr << "Expecting tag \"" << expect << "\", got \"" << ts << "\""
-              << std::endl;
-    exit(1);
-  }
+  expect_tag(is, expect);
   std::string val;
   if (!std::getline(is, val)) {
-    std::cerr << "Error reading string after tag \"" << ts << "\"" << std::endl;
+    std::cerr << "Error reading string after tag \"" << expect << "\""
+              << std::endl;
     exit(1);
   }
   is >> std::ws;
   return Ume::trim(val);
 }
 
-bool expect_line(std::istream &is, char const *const expect) {
-  const size_t bufsize{256};
-  char buf[bufsize];
-  buf[0] = '\0';
-  is.getline(buf, bufsize);
-  if (!is || std::strcmp(buf, expect)) {
-    std::cerr << "Expecting line \"" << expect << "\", got \"" << buf << '\n';
+bool expect_line(std::istream &is, std::string_view const expect) {
+  std::string line;
+  if (!std::getline(is, line) || line != expect) {
+    std::cerr << "Expecting line \"" << expect << "\", got \"" << line << '\n';
     exit(1);
   }
   is >> std::ws;
