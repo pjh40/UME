@@ -27,9 +27,10 @@
 #include "Ume/Timer.hh"
 #include "Ume/face_area.hh"
 #include "Ume/gradient.hh"
-#include "Ume/renumbering.hh"
 #include "Ume/process_mgmt.hh"
+#include "Ume/renumbering.hh"
 #include "Ume/utils.hh"
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <fstream>
@@ -104,12 +105,43 @@ int main(int argc, char *argv[]) {
   /* Find an interior local zone to set a value in. NOTE zone types
    * -1: exterior zone
    *  0: null zone or parallel ghost zone (halo)
-   *  1: interior zone */
-  int czi = mesh.zones.local_size() / 2;
+   *  1: interior zone
+   *
+   * Take the middle of the interior zones rather than scanning upward from
+   * the middle of the whole zone range: where the interior zones sit is a
+   * property of the mesh generator, not something a driver can assume.  A
+   * generator that appends every boundary zone after every real one leaves the
+   * upper half of a rank's range entirely mask == -1, and the scan runs off the
+   * end -- leaving czi == local_size(), which asserts in a Debug build and in a
+   * Release build spikes a ghost zone, or writes past `zfield` entirely on a
+   * rank that has no ghosts. */
   auto const &kztyp = mesh.zones.mask;
-  while (czi < mesh.zones.local_size() && kztyp[czi] < 1)
-    czi += 1;
-  assert(czi < mesh.zones.local_size());
+  int const zl = mesh.zones.local_size();
+  auto const is_interior = [](short const mask) { return mask >= 1; };
+  auto const num_interior =
+      std::ranges::count_if(kztyp.begin(), kztyp.begin() + zl, is_interior);
+  if (num_interior == 0) {
+    /* One rank returning while the others wait in a gathscat would hang the
+       job, so this has to take the whole job down.  The partitioning allows a
+       rank with no zones, but this driver seeds its gradient in an interior
+       zone of every rank. */
+    comm.abort("this rank holds no interior zones: ume_mpi cannot run an "
+               "over-decomposed mesh, since every rank needs an interior "
+               "zone to seed its gradient in");
+    return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
+  }
+
+  /* The middle interior zone, located by counting rather than by building the
+     list of them: on a production rank that list would be millions of ints,
+     held only to read one of them. */
+  int czi = -1;
+  for (int z = 0, seen = 0; z < zl; ++z) {
+    if (is_interior(kztyp[z]) && seen++ == num_interior / 2) {
+      czi = z;
+      break;
+    }
+  }
+  assert(czi >= 0);
 
   /* Create a zone-field that is everywhere zero but in the centered
    * zone at index czi. */

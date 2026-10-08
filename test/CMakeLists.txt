@@ -85,4 +85,44 @@ if(TARGET ume_mpi)
   set_tests_properties(
     ume_mpi_no_basename ume_mpi_only_kokkos_args ume_mpi_unreadable_mesh
     PROPERTIES TIMEOUT 90)
+
+  # ume_mpi seeds its gradient in one interior zone (mask >= 1) of each rank.
+  # Searching upward from the middle of the zone range ran off the end when the
+  # upper half held none; a rank with no interior zone at all, which an
+  # over-decomposed mesh has, has to take the job down.
+  add_executable(write_zone_mask_mesh write_zone_mask_mesh.cc)
+  target_link_libraries(write_zone_mask_mesh PRIVATE Ume)
+  target_compile_definitions(write_zone_mask_mesh PRIVATE
+    ${COMMON_COMPILE_DEFINITIONS})
+  # The meshes are named relative to their directory: read_mesh() formats
+  # the file name into a fixed 80-character buffer.
+  set(_zone_mask_dir ${CMAKE_CURRENT_BINARY_DIR}/zone_mask_meshes)
+  file(MAKE_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_write_no_zone_mesh
+    COMMAND write_zone_mask_mesh no-zones.00000.ume
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_write_lower_interior_mesh
+    COMMAND write_zone_mask_mesh lower-interior.00000.ume 1 1 -1 -1
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  set_tests_properties(
+    ume_mpi_write_no_zone_mesh ume_mpi_write_lower_interior_mesh PROPERTIES
+    FIXTURES_SETUP ume_mpi_zone_mask_meshes)
+
+  add_test(NAME ume_mpi_no_interior_zone
+    COMMAND ${CMAKE_COMMAND}
+      -DARGS=no-zones
+      "-DEXPECT=Transport::abort: .*ume_mpi cannot run an over-decomposed mesh"
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  add_test(NAME ume_mpi_interior_zones_in_lower_half
+    COMMAND ${CMAKE_COMMAND}
+      -DARGS=lower-interior
+      -DEXPECT_SUCCESS=ON
+      "-DEXPECT=Checking gradient result.*Done\\."
+      ${_ume_mpi_check}
+    WORKING_DIRECTORY ${_zone_mask_dir})
+  set_tests_properties(
+    ume_mpi_no_interior_zone ume_mpi_interior_zones_in_lower_half PROPERTIES
+    FIXTURES_REQUIRED ume_mpi_zone_mask_meshes
+    TIMEOUT 90)
 endif()
