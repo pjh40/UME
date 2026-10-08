@@ -63,12 +63,8 @@ add_library(Ume
   process_mgmt.cc
   )
 
-# Build option to force the use of the Kokkos::Serial backend.
-option(UME_SERIAL "Enable the Kokkos::Serial backend")
-if (UME_SERIAL)
-  add_compile_definitions(UME_SERIAL)
-  message(STATUS "Using the Kokkos::Serial backend.")
-endif()
+# Note: UME_SERIAL is defined in the top-level CMakeLists.txt, so that every
+# target in the project sees the same execution-space typedefs.
 
 # Build option to compile and link with LLVM ASAN/UBSAN for
 # developement/debugging purposes only.
