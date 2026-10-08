@@ -25,12 +25,16 @@
 #include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <cstddef>
+#include <istream>
 #include <memory>
 #include <numeric>
 #include <random>
 #include <ranges>
+#include <sstream>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -695,4 +699,232 @@ TEST_CASE("mesh: equality compares every entity", "[mesh]") {
     face_to_zone[0] = 0;
     REQUIRE(lhs.mesh == rhs.mesh);
   }
+}
+
+namespace {
+
+/* `n` values of type T, each one more than the last, starting at `next`, which
+   is left one past the last. */
+template <class T>
+std::vector<T> distinct_values(int &next, std::size_t const n) {
+  std::vector<T> values(n);
+  for (T &v : values)
+    v = static_cast<T>(next++);
+  return values;
+}
+
+/* Give every field that Mesh::write emits a value no other field has: the mesh
+   scalars, the ten Entity fields of each entity, and each entity's maps.  A
+   field that is not written, not read, or read into another field's slot then
+   shows as a difference after a round trip.  With `with_iotas` false the
+   iotas are left empty, as an input without iotas reads them. */
+void populate(Mesh &mesh, bool const with_iotas) {
+  mesh.ivtag = UME_VERSION_2;
+  mesh.mype = 2;
+  mesh.numpe = 5;
+  mesh.geo = Mesh::CYLINDRICAL;
+  mesh.dump_iotas = with_iotas;
+
+  constexpr int local = 3;
+  constexpr int total = 5;
+  constexpr int ghost = total - local;
+  int next = 1;
+  for (auto const &[name, e] : entities_of(mesh)) {
+    if (e == &mesh.iotas && !with_iotas)
+      continue;
+    e->resize(local, total, ghost);
+    e->mask = distinct_values<short>(next, total);
+    e->comm_type = distinct_values<int>(next, total);
+    e->cpy_idx = distinct_values<int>(next, ghost);
+    e->src_pe = distinct_values<int>(next, ghost);
+    e->src_idx = distinct_values<int>(next, ghost);
+    e->ghost_mask = distinct_values<int>(next, ghost);
+    /* Braced initializers are evaluated left to right. */
+    e->myCpys = {{next++, distinct_values<int>(next, 2)},
+        {next++, distinct_values<int>(next, 1)}};
+    e->mySrcs = {{next++, distinct_values<int>(next, 3)}};
+    e->subsets = {
+        {std::string{name} + "_a", next++, distinct_values<int>(next, 2),
+            distinct_values<short>(next, 2)},
+        {std::string{name} + "_b", next++, distinct_values<int>(next, 1),
+            distinct_values<short>(next, 1)}};
+  }
+
+  /* Points::resize leaves the Vec3s uninitialized. */
+  for (auto &x : mesh.ds->access_vec3v("pcoord")) {
+    x = Ume::Vec3(std::array{static_cast<double>(next),
+        static_cast<double>(next + 1), static_cast<double>(next + 2)});
+    next += 3;
+  }
+  std::vector<char const *> maps{"m:e>p1", "m:e>p2", "m:f>z1", "m:f>z2",
+      "m:s>z", "m:s>p1", "m:s>p2", "m:s>e", "m:s>f", "m:s>c1", "m:s>c2",
+      "m:s>s2", "m:s>s3", "m:s>s4", "m:s>s5", "m:c>p", "m:c>z"};
+  if (with_iotas)
+    maps.insert(maps.end(), {"m:a>z", "m:a>f", "m:a>p", "m:a>e", "m:a>s"});
+  for (char const *const map : maps)
+    mesh.ds->access_intv(map) = distinct_values<int>(next, total);
+}
+
+/* Whether `is` has been read to its end. */
+bool exhausted(std::istream &is) {
+  return is.peek() == std::istream::traits_type::eof();
+}
+
+} // namespace
+
+/* Entity::write and Entity::read stream ten fields in a fixed order, and each
+   entity wraps them in its own tag and maps.  Every entity is written alone
+   and read into a fresh mesh, and compared field by field through
+   Entity::operator==.  Subset::operator== leaves out the subset's lsize, so
+   that is compared directly. */
+TEST_CASE("entity: write and read round trip every field", "[mesh][io]") {
+  Bare_Mesh src;
+  populate(src.mesh, true);
+  Bare_Mesh dst;
+  auto const from = entities_of(src.mesh);
+  auto const to = entities_of(dst.mesh);
+  for (std::size_t i = 0; i < from.size(); ++i) {
+    auto const &[name, original] = from[i];
+    Ume::SOA_Idx::Entity &copy = *to[i].second;
+    INFO("entity " << name);
+    std::stringstream stream;
+    original->write(stream);
+    copy.read(stream);
+    CHECK(exhausted(stream));
+    CHECK(copy.local_size() == original->local_size());
+    CHECK(copy.size() == original->size());
+    CHECK(copy == *original);
+    REQUIRE(copy.subsets.size() == original->subsets.size());
+    for (std::size_t j = 0; j < copy.subsets.size(); ++j)
+      CHECK(copy.subsets[j].lsize == original->subsets[j].lsize);
+  }
+
+  /* Positive control: a difference in any one of the fields that the
+     comparison above relies on makes the entities unequal. */
+  using Change = void (*)(Ume::SOA_Idx::Entity &);
+  std::pair<char const *, Change> const changes[] = {
+      {"lsize",
+          [](Ume::SOA_Idx::Entity &e) {
+            e.resize(e.local_size() - 1, e.size(),
+                static_cast<int>(e.cpy_idx.size()));
+          }},
+      {"mask", [](Ume::SOA_Idx::Entity &e) { ++e.mask.back(); }},
+      {"comm_type", [](Ume::SOA_Idx::Entity &e) { ++e.comm_type.back(); }},
+      {"cpy_idx", [](Ume::SOA_Idx::Entity &e) { ++e.cpy_idx.back(); }},
+      {"src_pe", [](Ume::SOA_Idx::Entity &e) { ++e.src_pe.back(); }},
+      {"src_idx", [](Ume::SOA_Idx::Entity &e) { ++e.src_idx.back(); }},
+      {"ghost_mask", [](Ume::SOA_Idx::Entity &e) { ++e.ghost_mask.back(); }},
+      {"myCpys", [](Ume::SOA_Idx::Entity &e) { ++e.myCpys.back().pe; }},
+      {"mySrcs",
+          [](Ume::SOA_Idx::Entity &e) { ++e.mySrcs.back().elements.back(); }},
+      {"subsets",
+          [](Ume::SOA_Idx::Entity &e) { ++e.subsets.back().elements.back(); }},
+  };
+  std::stringstream zones;
+  src.mesh.zones.write(zones);
+  for (auto const &[field, change] : changes) {
+    INFO("field " << field);
+    Bare_Mesh changed;
+    std::istringstream stream{zones.str()};
+    changed.mesh.zones.read(stream);
+    REQUIRE(changed.mesh.zones == src.mesh.zones);
+    change(changed.mesh.zones);
+    CHECK_FALSE(changed.mesh.zones == src.mesh.zones);
+  }
+}
+
+/* Mesh::write and Mesh::read are the binary mesh format: the mesh scalars,
+   then each entity in a fixed order, the iotas only when `dump_iotas` says
+   so.  A mesh read back from what was written compares equal to the
+   original, entity by entity. */
+TEST_CASE("mesh: write and read round trip", "[mesh][io]") {
+  bool const with_iotas = GENERATE(true, false);
+  INFO("with iotas " << with_iotas);
+  Bare_Mesh src;
+  populate(src.mesh, with_iotas);
+  std::stringstream stream;
+  src.mesh.write(stream);
+
+  Bare_Mesh dst;
+  dst.mesh.version_header = false;
+  dst.mesh.dump_iotas = !with_iotas;
+  dst.mesh.read(stream);
+  CHECK(exhausted(stream));
+  CHECK(dst.mesh.version_header);
+  CHECK(dst.mesh.iotas.size() == src.mesh.iotas.size());
+  CHECK(dst.mesh == src.mesh);
+
+  /* Positive control: one face map entry, or one mesh scalar, differing makes
+     the meshes unequal. */
+  auto &face_to_zone = dst.mesh.ds->access_intv("m:f>z1");
+  ++face_to_zone.front();
+  CHECK_FALSE(dst.mesh == src.mesh);
+  --face_to_zone.front();
+  REQUIRE(dst.mesh == src.mesh);
+  ++dst.mesh.numpe;
+  CHECK_FALSE(dst.mesh == src.mesh);
+}
+
+/* A change to the order of the format made in write and read alike passes
+   both round trips above, and misreads every existing input file.  So the
+   layout itself is pinned: the zones (a tag and the Entity fields, nothing
+   else) and the mesh (its scalars, then its entities), each against a stream
+   built from the format's order. */
+TEST_CASE("mesh: write lays fields out in the file order", "[mesh][io]") {
+  Bare_Mesh src;
+  populate(src.mesh, true);
+  Mesh const &mesh = src.mesh;
+  auto const &zones = mesh.zones;
+
+  /* `swap` exchanges src_pe and src_idx, for the positive control. */
+  auto const zones_layout = [&zones](bool const swap) {
+    std::ostringstream os;
+    Ume::write_bin(os, std::string{"zones"});
+    Ume::write_bin(os, zones.local_size());
+    Ume::write_bin(os, zones.mask);
+    Ume::write_bin(os, zones.comm_type);
+    Ume::write_bin(os, zones.cpy_idx);
+    Ume::write_bin(os, swap ? zones.src_idx : zones.src_pe);
+    Ume::write_bin(os, swap ? zones.src_pe : zones.src_idx);
+    Ume::write_bin(os, zones.ghost_mask);
+    Ume::write_bin<Ume::Comm::Neighbors>(os, zones.myCpys);
+    Ume::write_bin<Ume::Comm::Neighbors>(os, zones.mySrcs);
+    Ume::write_bin(os, zones.subsets.size());
+    for (auto const &subset : zones.subsets) {
+      Ume::write_bin(os, subset.name);
+      Ume::write_bin(os, subset.lsize);
+      Ume::write_bin(os, subset.elements);
+      Ume::write_bin(os, subset.mask);
+      os << '\n';
+    }
+    os << "\n\n";
+    return os.str();
+  };
+  std::ostringstream written;
+  zones.write(written);
+  CHECK(written.str() == zones_layout(false));
+  CHECK_FALSE(written.str() == zones_layout(true));
+
+  /* `swap` exchanges edges and faces, for the positive control. */
+  auto const mesh_layout = [&mesh](bool const swap) {
+    std::ostringstream os;
+    Ume::write_bin(os, mesh.ivtag);
+    Ume::write_bin(os, mesh.mype);
+    Ume::write_bin(os, mesh.numpe);
+    Ume::write_bin(os, mesh.geo);
+    Ume::write_bin(os, mesh.dump_iotas);
+    Ume::SOA_Idx::Entity const *const entities[] = {&mesh.points,
+        swap ? static_cast<Ume::SOA_Idx::Entity const *>(&mesh.faces)
+             : &mesh.edges,
+        swap ? static_cast<Ume::SOA_Idx::Entity const *>(&mesh.edges)
+             : &mesh.faces,
+        &mesh.sides, &mesh.corners, &mesh.zones, &mesh.iotas};
+    for (Ume::SOA_Idx::Entity const *const e : entities)
+      e->write(os);
+    return os.str();
+  };
+  written.str("");
+  mesh.write(written);
+  CHECK(written.str() == mesh_layout(false));
+  CHECK_FALSE(written.str() == mesh_layout(true));
 }
