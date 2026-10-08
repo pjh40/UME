@@ -190,6 +190,20 @@ private:
 };
 
 } // namespace SOA_Idx
+
+/* Declared here so that a caller outside SOA_Entity.cc reaches these rather
+   than instantiating the generic std::vector overloads, which would copy the
+   Subset objects' bytes. */
+//! Binary write specialization for std::vector<Entity::Subset>
+template <>
+void write_bin<SOA_Idx::Entity::Subset>(
+    std::ostream &os, std::vector<SOA_Idx::Entity::Subset> const &data);
+
+//! Binary read specialization for std::vector<Entity::Subset>
+template <>
+void read_bin<SOA_Idx::Entity::Subset>(
+    std::istream &is, std::vector<SOA_Idx::Entity::Subset> &data);
+
 } // namespace Ume
 
 #endif

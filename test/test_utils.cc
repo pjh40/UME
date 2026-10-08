@@ -9,6 +9,8 @@
   NOTICE.md file.
 */
 
+#include "Ume/Comm_Neighbors.hh"
+#include "Ume/SOA_Entity.hh"
 #include "Ume/Timer.hh"
 #include "Ume/VecN.hh"
 #include "Ume/utils.hh"
@@ -114,6 +116,47 @@ TEST_CASE("vector<int> binary read from an empty stream", "[utils]") {
   Ume::write_bin(full, std::vector<int>{4, 5});
   Ume::read_bin(full, out);
   CHECK(out == std::vector<int>{4, 5});
+}
+
+/* The Neighbors and Subset readers carried the same uninitialized length.
+   The Neighbors reader asserts its tag first, so its stream holds the tag and
+   ends where the length would be. */
+TEST_CASE(
+    "Neighbors binary read from a stream that ends after the tag", "[utils]") {
+  using Ume::Comm::Neighbors;
+  Neighbors out{{1, {2, 3}}};
+  std::stringstream cut;
+  Ume::write_bin(cut, std::string{"neighbors"});
+  scribble_stack();
+  Ume::read_bin<Neighbors>(cut, out);
+  CHECK(cut.fail());
+  CHECK(out.empty());
+
+  // Positive control: a stream that holds a Neighbors reads it into `out`.
+  Neighbors const written{{4, {5, 6}}, {7, {8}}};
+  std::stringstream full;
+  Ume::write_bin<Neighbors>(full, written);
+  Ume::read_bin<Neighbors>(full, out);
+  CHECK(out == written);
+}
+
+TEST_CASE(
+    "vector<Entity::Subset> binary read from an empty stream", "[utils]") {
+  using Subset = Ume::SOA_Idx::Entity::Subset;
+  std::vector<Subset> out{{"stale", 1, {0}, {1}}};
+  std::istringstream empty;
+  scribble_stack();
+  Ume::read_bin(empty, out);
+  CHECK(empty.fail());
+  CHECK(out.empty());
+
+  // Positive control: a stream that holds subsets reads them into `out`.
+  std::vector<Subset> const written{
+      {"left", 2, {0, 1, 2}, {1, 1, 0}}, {"right", 0, {}, {}}};
+  std::stringstream full;
+  Ume::write_bin(full, written);
+  Ume::read_bin(full, out);
+  CHECK(out == written);
 }
 
 TEST_CASE("ltrim", "[utils]") {

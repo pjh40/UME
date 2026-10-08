@@ -44,7 +44,7 @@ void write_bin<Comm::Neighbors>(
 
 template <>
 void read_bin<Comm::Neighbors>(std::istream &is, Ume::Comm::Neighbors &nvec) {
-  size_t len;
+  size_t len{0};
   std::string dummy;
   read_bin(is, dummy);
   assert(dummy == "neighbors");

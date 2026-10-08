@@ -41,7 +41,7 @@ void write_bin<Ume::SOA_Idx::Entity::Subset>(
 template <>
 void read_bin<Ume::SOA_Idx::Entity::Subset>(
     std::istream &is, std::vector<Ume::SOA_Idx::Entity::Subset> &data) {
-  size_t len;
+  size_t len{0};
   read_bin(is, len);
   if (len == 0) {
     data.clear();
