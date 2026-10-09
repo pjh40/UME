@@ -115,7 +115,7 @@ jobs:
 
       - name: Restore Kokkos
         id: kokkos
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/kokkos
           key: kokkos-${{ env.KOKKOS_VERSION }}-r${{ env.KOKKOS_CACHE_REV }}-${{ runner.os }}-ubuntu-24.04-${{ matrix.cxx }}-serial-openmp
@@ -142,7 +142,7 @@ jobs:
         # job that succeeds, and a red UME build or test should not cost the
         # next run a Kokkos build.
         if: steps.kokkos.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/kokkos
           key: ${{ steps.kokkos.outputs.cache-primary-key }}
@@ -235,7 +235,7 @@ jobs:
 
       - name: Restore Kokkos
         id: kokkos
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/kokkos
           key: kokkos-${{ env.KOKKOS_VERSION }}-r${{ env.KOKKOS_CACHE_REV }}-${{ runner.os }}-ubuntu-24.04-cuda-${{ env.CUDA_VERSION }}-ampere86
@@ -264,7 +264,7 @@ jobs:
         # job that succeeds, and a red UME build or test should not cost the
         # next run a Kokkos build.
         if: steps.kokkos.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/kokkos
           key: ${{ steps.kokkos.outputs.cache-primary-key }}
@@ -313,7 +313,7 @@ jobs:
 
       - name: Restore Kokkos
         id: kokkos
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/kokkos
           key: kokkos-${{ env.KOKKOS_VERSION }}-r${{ env.KOKKOS_CACHE_REV }}-${{ runner.os }}-ubuntu-24.04-rocm-${{ env.ROCM_VERSION }}-gfx942
@@ -344,7 +344,7 @@ jobs:
         # job that succeeds, and a red UME build or test should not cost the
         # next run a Kokkos build.
         if: steps.kokkos.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/kokkos
           key: ${{ steps.kokkos.outputs.cache-primary-key }}

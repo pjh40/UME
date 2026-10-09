@@ -166,8 +166,12 @@ set_tests_properties(scale_mesh_intact_mesh PROPERTIES
 # and exited 0.  A file-size limit of zero stands in for the full disk, with
 # SIGXFSZ ignored so that the write fails with EFBIG instead of killing the
 # process; the limit does not apply to the read.  scale_mesh_intact_mesh, the
-# same mesh with no limit, is the control.
-if(UNIX)
+# same mesh with no limit, is the control.  Registered only without MPI: an MPI
+# build's scale_mesh starts as an OpenMPI singleton, and on Linux its PMIx
+# startup cannot create its shared-memory segment under the zero limit
+# (PMIX_ERR_OUT_OF_RESOURCE), so MPI_Init aborts before the write is tried.
+# write_mesh's stream check has no MPI branch, and the non-MPI builds run it.
+if(UNIX AND NOT USE_MPI)
   add_test(NAME scale_mesh_write_size_limited_mesh
     COMMAND write_zone_mask_mesh
       ${_scale_mesh_dir}/size_limited.00000.ume 1 1 -1 -1)
