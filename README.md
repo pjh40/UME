@@ -69,6 +69,10 @@ CMake options that are not package-specific include:
   this requires building with a compatible LLVM-based compiler. This
   option is provided for developers. When using this option, it is
   recommended to have the `llvm-symbolizer` in `$PATH`.
+* `UME_MULTIRANK_TESTS=YES` registers the tests that run on two ranks
+  under `mpiexec`, and requires `USE_MPI=YES` and `USE_CATCH2=YES`. It is
+  off by default, since the ranks connect over a local socket, which a
+  sandboxed build may not be allowed to open.
 
 ### Build command
 

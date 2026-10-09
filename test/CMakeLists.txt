@@ -26,7 +26,10 @@ target_link_libraries(ume_tests PRIVATE
 # the library was built with it.
 target_compile_definitions(ume_tests PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 
-catch_discover_tests(ume_tests)
+# The project does not include(CTest), so there is no default timeout: without
+# one, a case that hangs, or that allocates without bound on a corrupt length,
+# stalls the run instead of failing.
+catch_discover_tests(ume_tests PROPERTIES TIMEOUT 120)
 
 # UME GPU-enabled tests
 
@@ -42,7 +45,8 @@ add_executable(ume_gpu_tests
 target_link_libraries(ume_gpu_tests PRIVATE
   Ume Catch2::Catch2)
 
-catch_discover_tests(ume_gpu_tests)
+# The same bound as ume_tests'.
+catch_discover_tests(ume_gpu_tests PROPERTIES TIMEOUT 120)
 
 # UME build-configuration tests
 
@@ -602,4 +606,74 @@ if(TARGET ume_mpi)
     ume_mpi_unknown_argument ume_mpi_argument_after_iteration_count PROPERTIES
     FIXTURES_REQUIRED ume_mpi_zone_mask_meshes
     TIMEOUT 90)
+endif()
+
+# Multi-rank tests
+
+# Two ranks under the MPI launcher, for what a singleton cannot show: the
+# virtual-rank map gathered from every rank, and one rank's Comm::MPI::abort
+# taking the other down.  Opt-in, since the launcher's ranks talk over a local
+# socket, which a sandboxed run may not be allowed to bind.
+option(UME_MULTIRANK_TESTS
+  "Register the ctests that run on two ranks under MPIEXEC_EXECUTABLE" OFF)
+if(UME_MULTIRANK_TESTS AND TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
+  # The gathered virtual-rank map overflowed its array on two or more ranks:
+  # each rank sent numpe ints to an array of one per rank.  Catch2 exits
+  # nonzero when no case matches the name, so a renamed case fails here.
+  add_test(NAME mpi_exchange_two_ranks
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+      $<TARGET_FILE:ume_tests>
+      "comm MPI: exchange with empty remotes and map virtual ranks")
+  set_tests_properties(mpi_exchange_two_ranks PROPERTIES TIMEOUT 120)
+
+  # A rank that cannot read its partition file, missing or cut short, has to
+  # take the job down with Comm::MPI::abort; returning from main instead left
+  # the other rank waiting.  Rank 0 reads a whole copy of the singleton tests'
+  # lower-interior mesh, and rank 1 has no file, or one cut short as in
+  # ume_mpi_truncated_mesh.  ume_mpi_interior_zones_in_lower_half, the same
+  # mesh whole on one rank, is the control.  MPIEXEC_PREFLAGS reach the
+  # launcher; there are no MPIEXEC_POSTFLAGS, since ume_mpi and Catch2 would
+  # take them for their own arguments.
+  set(_two_rank_dir ${CMAKE_CURRENT_BINARY_DIR}/two_rank_meshes)
+  file(MAKE_DIRECTORY ${_two_rank_dir})
+  add_test(NAME ume_mpi_write_missing_partition_mesh
+    COMMAND write_zone_mask_mesh
+      ${_two_rank_dir}/missing.00000.ume 1 1 -1 -1)
+  add_test(NAME ume_mpi_write_truncated_partition_mesh_0
+    COMMAND write_zone_mask_mesh
+      ${_two_rank_dir}/truncated.00000.ume 1 1 -1 -1)
+  add_test(NAME ume_mpi_write_truncated_partition_mesh_1
+    COMMAND write_zone_mask_mesh --drop-last=10
+      ${_two_rank_dir}/truncated.00001.ume 1 1 -1 -1)
+  set_tests_properties(
+    ume_mpi_write_missing_partition_mesh
+    ume_mpi_write_truncated_partition_mesh_0
+    ume_mpi_write_truncated_partition_mesh_1 PROPERTIES
+    FIXTURES_SETUP ume_mpi_two_rank_meshes)
+
+  set(_two_rank_launcher
+    ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS})
+  list(JOIN _two_rank_launcher "$<SEMICOLON>" _two_rank_launcher)
+  add_test(NAME ume_mpi_missing_partition_aborts
+    COMMAND ${CMAKE_COMMAND}
+      "-DLAUNCHER=${_two_rank_launcher}"
+      -DARGS=${_two_rank_dir}/missing
+      "-DEXPECT=Unable to open file \"[^\"]*/missing\\.00001\\.ume\" for reading\\..*Transport::abort: this rank could not read its mesh file"
+      ${_ume_mpi_check})
+  add_test(NAME ume_mpi_truncated_partition_aborts
+    COMMAND ${CMAKE_COMMAND}
+      "-DLAUNCHER=${_two_rank_launcher}"
+      -DARGS=${_two_rank_dir}/truncated
+      "-DEXPECT=Unable to read a mesh from file \"[^\"]*/truncated\\.00001\\.ume\"\\..*Transport::abort: this rank could not read its mesh file"
+      ${_ume_mpi_check})
+  set_tests_properties(
+    ume_mpi_missing_partition_aborts ume_mpi_truncated_partition_aborts
+    PROPERTIES
+    FIXTURES_REQUIRED ume_mpi_two_rank_meshes
+    TIMEOUT 90)
+elseif(UME_MULTIRANK_TESTS)
+  # Asked for and not registered would let a run pass without them.
+  message(FATAL_ERROR
+    "UME_MULTIRANK_TESTS needs USE_MPI=ON and an MPI launcher; "
+    "MPIEXEC_EXECUTABLE is \"${MPIEXEC_EXECUTABLE}\"")
 endif()

@@ -1,9 +1,11 @@
 # Ume/test/check_ume_mpi_startup.cmake
 #
-#   cmake -DUME_MPI=<path to ume_mpi> -DARGS=<;-list of arguments>
-#         -DEXPECT=<regex> [-DEXPECT_SUCCESS=ON] -P check_ume_mpi_startup.cmake
+#   cmake -DUME_MPI=<path to ume_mpi> [-DLAUNCHER=<;-list>]
+#         -DARGS=<;-list of arguments> -DEXPECT=<regex> [-DEXPECT_SUCCESS=ON]
+#         -P check_ume_mpi_startup.cmake
 #
-# Runs ume_mpi as an MPI singleton with ARGS and requires that it fail (a
+# Runs ume_mpi with ARGS, as an MPI singleton or, with LAUNCHER, under the
+# launcher command it names (`mpiexec -n 2`, say), and requires that it fail (a
 # nonzero exit status), or with EXPECT_SUCCESS that it exit 0, and that its
 # combined stdout and stderr match EXPECT.
 # The startup failures in ume_mpi have to go through Comm::MPI::abort, which
@@ -19,7 +21,7 @@ foreach(var IN ITEMS UME_MPI EXPECT)
 endforeach()
 
 execute_process(
-  COMMAND "${UME_MPI}" ${ARGS}
+  COMMAND ${LAUNCHER} "${UME_MPI}" ${ARGS}
   RESULT_VARIABLE status
   OUTPUT_VARIABLE out
   ERROR_VARIABLE err

@@ -148,6 +148,8 @@ jobs:
           key: ${{ steps.kokkos.outputs.cache-primary-key }}
 
       - name: Configure UME
+        # The MPI cells also register the tests that run on two ranks under
+        # mpiexec, which the local gate's sandbox cannot run.
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
@@ -156,6 +158,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$HOME/kokkos" \
             -DUSE_CATCH2=ON \
             -DUSE_MPI="$USE_MPI" \
+            -DUME_MULTIRANK_TESTS="$USE_MPI" \
             -DUME_SERIAL="$UME_SERIAL" \
             -DUME_SANITIZE="$UME_SANITIZE"
 
