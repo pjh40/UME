@@ -18,6 +18,7 @@
 
 #include "Ume/Comm_Neighbors.hh"
 #include "Ume/DS_Types.hh"
+#include <algorithm>
 #include <iterator>
 #include <type_traits>
 

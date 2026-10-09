@@ -20,6 +20,7 @@
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/Timer.hh"
 #include "Ume/utils.hh"
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -171,7 +172,7 @@ bool read_bool_tag(std::istream &is, char const *const expect) {
   bool val = false;
   is >> std::boolalpha >> val;
   if (!is) {
-    std::cerr << "Didn't find an integer after tag \"" << expect << "\""
+    std::cerr << "Didn't find true or false after tag \"" << expect << "\""
               << std::endl;
     exit(EXIT_FAILURE);
   }
@@ -194,7 +195,8 @@ std::string read_tag_str(std::istream &is, char const *const expect) {
 bool expect_line(std::istream &is, std::string_view const expect) {
   std::string line;
   if (!std::getline(is, line) || line != expect) {
-    std::cerr << "Expecting line \"" << expect << "\", got \"" << line << '\n';
+    std::cerr << "Expecting line \"" << expect << "\", got \"" << line
+              << "\"\n";
     exit(1);
   }
   is >> std::ws;

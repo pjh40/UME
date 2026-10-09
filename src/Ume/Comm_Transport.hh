@@ -57,7 +57,9 @@ public:
   virtual void abort(char const *const message);
 };
 
-//! This is a null transporter: it doesn't do anythin
+//! A null transport: it exchanges nothing
+/*! does_exchanges() is false, so a gather, scatter or gathscat through it
+    leaves the field unchanged. */
 class Dummy_Transport : public Transport {
 public:
   Dummy_Transport();

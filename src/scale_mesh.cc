@@ -12,14 +12,12 @@
 /*!
   \file scale_mesh.cc
 
-  This is an example of MPI-based driver that reads one partition of an Ume
-  binary mesh into each rank, and then performs (and tests) a gradient
-  operation.
+  Reads a whole (single-rank, ghost-free) Ume binary mesh, stitches copies of
+  it together to make a mesh `scale` times larger, and writes the result.
 
-  Note that there must be as many *.ume files as there are MPI ranks, and they
-  should have filenames of the form '<basename>.<pe>.ume', where <basename> is
-  an arbitray string provided on the command line, and <pe> is a rank number
-  with a printf format of "%05d" (zero-filled, five digits)
+  The input is '<basename>.00000.ume'; a partitioned mesh, or one with ghosts,
+  is refused.  The output is '<basename>.<scale>.00000.ume', both numbers
+  zero-filled to five digits.  `scale` has to be a power of 2.
 */
 
 #include "Ume/Comm_MPI.hh"

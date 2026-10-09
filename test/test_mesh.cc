@@ -81,10 +81,12 @@ static_assert(is_pinned_v<Ume::SOA_Idx::Iotas>);
 /* Positive control: a movable, copyable type is not pinned. */
 static_assert(!is_pinned_v<std::vector<int>>);
 
-/* Consequently a Mesh cannot be an element of a std::vector that sizes,
-   reallocates or sorts itself: those all require MoveInsertable.  No type
-   trait states that -- vector's sizing constructor is declared for every
-   element type and only fails when its body is instantiated -- so the
+/* Consequently a Mesh cannot be an element of a std::vector that grows,
+   reallocates or sorts itself: push_back, resize, reserve and sort all
+   require MoveInsertable or move assignment.  A vector built at its final
+   size, `std::vector<Mesh> v(3)`, needs only DefaultInsertable and compiles.
+   No type trait states that -- vector's members are declared for every
+   element type and only fail when their bodies are instantiated -- so the
    guarantee is the assertions above, and the compile error lands at the point
    of use. */
 

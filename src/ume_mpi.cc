@@ -47,14 +47,19 @@ using DBLV_T = typename Ume::DS_Types::DBLV_T;
 using VEC3V_T = typename Ume::DS_Types::VEC3V_T;
 using VEC3_T = typename Ume::DS_Types::VEC3_T;
 
+namespace {
+
 bool read_mesh(char const *const basename, int const mype, Mesh &mesh);
-bool test_point_gathscat(Mesh &mesh);
+// Unused: its call in main is commented out.
+[[maybe_unused]] bool test_point_gathscat(Mesh &mesh);
 void check_gradzatz_diffs(Mesh const &mesh, int const &centered_zone_index,
     VEC3V_T const &zgrad, VEC3V_T const &zgrad_invert, VEC3V_T const &pgrad,
     VEC3V_T const &pgrad_invert);
 void report_gradient_mismatches(int const mype,
     Ume::SOA_Idx::Entity const &entity, char const tag, std::string_view label,
     VEC3V_T const &grad, VEC3V_T const &grad_invert, double const tol);
+
+} // namespace
 
 int main(int argc, char *argv[]) {
   /* Initialize MPI and instantiate the MPI Transport. */
@@ -120,7 +125,8 @@ int main(int argc, char *argv[]) {
 
   /* Read the data file.  A rank that cannot read its partition has to take the
      whole job down: returning here would leave the other ranks waiting in the
-     gathscat below, which hangs rather than fails. */
+     gathscat below, which hangs, or is killed by the launcher, rather than
+     fails. */
   if (!read_mesh(argv[1], comm.pe(), mesh)) {
     comm.abort("this rank could not read its mesh file");
     return EXIT_FAILURE; // not reached; abort() is not declared [[noreturn]]
@@ -149,11 +155,12 @@ int main(int argc, char *argv[]) {
    * Take the middle of the interior zones rather than scanning upward from
    * the middle of the whole zone range: where the interior zones sit is a
    * property of the mesh generator, not something a driver can assume.  A
-   * generator that appends every boundary zone after every real one leaves the
-   * upper half of a rank's range entirely mask == -1, and the scan runs off the
-   * end -- leaving czi == local_size(), which asserts in a Debug build and in a
-   * Release build spikes a ghost zone, or writes past `zfield` entirely on a
-   * rank that has no ghosts. */
+   * generator that appends every boundary zone after every real one, on a
+   * rank where boundary zones are at least half of the local zones, leaves the
+   * upper half of the rank's range entirely mask == -1, and the scan runs off
+   * the end -- leaving czi == local_size(), which asserts in a Debug build and
+   * in a Release build spikes a ghost zone, or writes past `zfield` entirely on
+   * a rank that has no ghosts. */
   auto const &kztyp = mesh.zones.mask;
   int const zl = mesh.zones.local_size();
   auto const is_interior = [](short const mask) { return mask >= 1; };
@@ -269,6 +276,8 @@ int main(int argc, char *argv[]) {
   comm.stop();
   return EXIT_SUCCESS;
 }
+
+namespace {
 
 bool read_mesh(char const *const basename, int const mype, Mesh &mesh) {
   std::string const fname = Ume::mesh_filename(basename, mype);
@@ -412,3 +421,5 @@ void report_gradient_mismatches(int const mype,
     }
   }
 }
+
+} // namespace

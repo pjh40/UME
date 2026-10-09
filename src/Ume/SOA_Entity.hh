@@ -109,12 +109,18 @@ struct Entity {
   Ume::Comm::Neighbors mySrcs;
 
   //! Do a remote gather for a `field` on this entity, combined with `op`
+  /*! Leaves `field` unchanged when the transport does not exchange
+      (Comm::Transport::does_exchanges() is false, as for Dummy_Transport). */
   template <typename FT> void gather(Comm::Op const op, FT &field);
 
   //! Do a scatter to remotes for a `field` on this entity
+  /*! Leaves `field` unchanged when the transport does not exchange
+      (Comm::Transport::does_exchanges() is false, as for Dummy_Transport). */
   template <typename FT> void scatter(FT &field);
 
   //! Combined gather-scatter operation
+  /*! Leaves `field` unchanged when the transport does not exchange
+      (Comm::Transport::does_exchanges() is false, as for Dummy_Transport). */
   template <typename FT> void gathscat(Comm::Op const op, FT &field);
 
   //! Define a named subset of this Entity's elements

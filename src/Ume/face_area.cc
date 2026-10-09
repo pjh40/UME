@@ -21,7 +21,6 @@ namespace Ume {
 
 using Mesh = SOA_Idx::Mesh;
 using DBLV_T = DS_Types::DBLV_T;
-using VEC3V_T = DS_Types::VEC3V_T;
 
 void calc_face_area(Mesh &mesh, DBLV_T &face_area) {
   auto const &side_type = mesh.sides.mask;
