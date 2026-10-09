@@ -172,7 +172,8 @@ jobs:
         # local gate does.  ASan stops the test at its first report.  UBSan
         # reports and carries on, as clang does by default, so a report from
         # a test that passes would never be shown: its reports go to files,
-        # which the next step summarizes, and they do not fail the cell.
+        # which the next step summarizes and fails the cell on, once this
+        # step has reported the tests' own results.
         # log_path is common to every sanitizer in the process, so ASan and
         # LeakSanitizer reports go to those files too, not to the test's
         # output: a test that fails on one shows its report in the next step.
@@ -193,19 +194,33 @@ jobs:
         run: |
           shopt -s nullglob
           reports=("$RUNNER_TEMP"/sanitizer/report.*)
+          # UBSan's "runtime error" lines, and the "==pid==ERROR:" line that
+          # opens an ASan or LeakSanitizer report: one line per report.  Not
+          # the lines naming a source file, which a report's SUMMARY: line
+          # also does.
+          errors=""
+          if (( ${#reports[@]} > 0 )); then
+            errors=$({ grep -hE 'runtime error|^==[0-9]+==ERROR: ' "${reports[@]}" || true; } \
+              | sed -E 's/^==[0-9]+==//')
+          fi
           {
             echo "### Sanitizer reports: ${#reports[@]} file(s)"
             if (( ${#reports[@]} > 0 )); then
-              # UBSan's "runtime error" lines, and the "==pid==ERROR:" line
-              # that opens an ASan or LeakSanitizer report.
               echo '```'
-              { grep -hE 'runtime error|^==[0-9]+==ERROR: ' "${reports[@]}" || true; } \
-                | sed -E 's/^==[0-9]+==//' | sort | uniq -c | sort -rn
+              if [[ -n $errors ]]; then
+                sort <<< "$errors" | uniq -c | sort -rn
+              fi
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if (( ${#reports[@]} > 0 )); then
             cat "${reports[@]}"
+          fi
+          # test/ubsan.ignorelist compiles out the third-party headers'
+          # integer reports, so a report left here is UME's own.
+          if [[ -n $errors ]]; then
+            echo "$(grep -c '' <<< "$errors") sanitizer report(s); see the step summary." >&2
+            exit 1
           fi
 
   cuda-compile:
