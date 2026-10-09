@@ -22,6 +22,7 @@
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <string_view>
+#include <type_traits>
 
 using namespace Ume;
 using namespace Ume::Comm;
@@ -55,6 +56,30 @@ private:
     recvs.buf = sends.buf;
   }
 };
+
+/*! Implements the three exchanges and stop() but does not state whether it
+    exchanges. Were does_exchanges() defaulted to false, this would compile and
+    every gather, scatter and gathscat through it would be a silent no-op. */
+class Unstated_Transport : public Transport {
+public:
+  void exchange(Buffers<DS_Types::INTV_T> const & /*sends*/,
+      Buffers<DS_Types::INTV_T> & /*recvs*/) override {}
+  void exchange(Buffers<DS_Types::DBLV_T> const & /*sends*/,
+      Buffers<DS_Types::DBLV_T> & /*recvs*/) override {}
+  void exchange(Buffers<DS_Types::VEC3V_T> const & /*sends*/,
+      Buffers<DS_Types::VEC3V_T> & /*recvs*/) override {}
+  int stop() override { return 0; }
+};
+
+//! Unstated_Transport with the one difference: it states the flag
+class Stated_Transport : public Unstated_Transport {
+public:
+  bool does_exchanges() const override { return true; }
+};
+
+// Every transport states whether it exchanges; there is no default.
+static_assert(std::is_abstract_v<Unstated_Transport>);
+static_assert(!std::is_abstract_v<Stated_Transport>);
 
 enum class Kind { gather, scatter, gathscat };
 constexpr std::array kinds{Kind::gather, Kind::scatter, Kind::gathscat};

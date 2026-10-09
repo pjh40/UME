@@ -39,10 +39,12 @@ public:
       Buffers<DS_Types::VEC3V_T> & /*recvs*/) {}
 
   //! Whether `exchange` moves data between partitions
-  /*! When false, `exchange` leaves the receive buffers as they were, and
-      Entity::gather, scatter and gathscat leave the field untouched rather
-      than unpack those buffers over it. */
-  virtual bool does_exchanges() const { return false; }
+  /*! Each transport states this; there is no default, so a transport that
+      implements `exchange` cannot silently skip every exchange by leaving
+      it out. When false, `exchange` leaves the receive buffers as they were,
+      and Entity::gather, scatter and gathscat leave the field untouched
+      rather than unpack those buffers over it. */
+  virtual bool does_exchanges() const = 0;
 
   //! Return some sort of identifier for this node in the Transport graph
   virtual int id() const { return -1; }
@@ -63,6 +65,7 @@ public:
 class Dummy_Transport : public Transport {
 public:
   Dummy_Transport();
+  bool does_exchanges() const override { return false; }
   int stop() override { return -1; }
 };
 
