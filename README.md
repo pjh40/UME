@@ -68,7 +68,13 @@ CMake options that are not package-specific include:
   Sanitizer (ASAN) and Undefined Behavior Sanitizer (UBSAN). Note that
   this requires building with a compatible LLVM-based compiler. This
   option is provided for developers. When using this option, it is
-  recommended to have the `llvm-symbolizer` in `$PATH`.
+  recommended to have the `llvm-symbolizer` in `$PATH`. UBSAN's
+  integer checks also report the unsigned wraparound that libstdc++'s
+  headers do on purpose; `test/ubsan.supp` suppresses those by location.
+  From the source directory, pass it to the tests as
+  `UBSAN_OPTIONS=suppressions=$PWD/test/ubsan.supp ctest --test-dir <build_dir>`.
+  The path must name an existing file: with a missing one, every
+  sanitized test aborts at startup.
 * `UME_MULTIRANK_TESTS=YES` registers the tests that run on two ranks
   under `mpiexec`, and requires `USE_MPI=YES` and `USE_CATCH2=YES`. It is
   off by default, since the ranks connect over a local socket, which a

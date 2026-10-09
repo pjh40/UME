@@ -174,9 +174,13 @@ jobs:
         # log_path is common to every sanitizer in the process, so ASan and
         # LeakSanitizer reports go to those files too, not to the test's
         # output: a test that fails on one shows its report in the next step.
+        # test/ubsan.supp drops the unsigned wraparound reports from inside
+        # libstdc++'s headers, which would otherwise be in every run's summary.
+        # The sanitizer runtime does not expand shell variables in its
+        # options, so the path is an expression, not $GITHUB_WORKSPACE.
         env:
           OMP_PROC_BIND: "false"
-          UBSAN_OPTIONS: print_stacktrace=1:log_path=${{ runner.temp }}/sanitizer/report
+          UBSAN_OPTIONS: print_stacktrace=1:log_path=${{ runner.temp }}/sanitizer/report:suppressions=${{ github.workspace }}/test/ubsan.supp
         run: |
           mkdir -p "$RUNNER_TEMP/sanitizer"
           ctest --test-dir build --output-on-failure --timeout 300
