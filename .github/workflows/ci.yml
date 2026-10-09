@@ -16,6 +16,14 @@
 
 name: CI
 
+# A push to any branch of this repository runs every job, whether or not the
+# branch has a pull request open.  A pull request also triggers the workflow,
+# and would run the matrix a second time for each push to its branch, so every
+# job carries the same `if:`, which skips a pull_request run whose head branch
+# is in this repository: the push run has already built and tested that head
+# commit.  (What is given up is a test of the head merged into the base, which
+# is what a pull_request run checks out.)  A pull request from a fork, whose
+# pushes do not run here, keeps its run.
 on:
   push:
   pull_request:
@@ -31,6 +39,9 @@ env:
 jobs:
   gate:
     name: gate (${{ matrix.cell }})
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -224,6 +235,9 @@ jobs:
           fi
 
   cuda-compile:
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
     env:
       CUDA_VERSION: "12.9"
@@ -305,6 +319,9 @@ jobs:
         run: cmake --build build
 
   hip-compile:
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-24.04
     env:
       ROCM_VERSION: "6.4.2"
