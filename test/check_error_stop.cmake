@@ -3,13 +3,15 @@
 #   cmake -DPROBE=<path to error_stop_probe> -DPOOL_MB=<n> -DEXPECT=<regex>
 #         [-DREJECT=<regex>] [-DEXPECT_SUCCESS=ON] -P check_error_stop.cmake
 #
-# Runs PROBE with MEMORY_POOL_SIZE_MB=POOL_MB and requires that it fail (a
-# nonzero exit status, or death by a signal), or with EXPECT_SUCCESS that it
-# exit 0; that its combined stdout and stderr match EXPECT; and, if REJECT is
-# set, that they do not match REJECT.
-# A script rather than PASS_REGULAR_EXPRESSION on the probe itself: in a Debug
-# build error_stop still dies on the pool's Finalize assertion after it has
-# reported, and ctest fails a test killed by a signal whatever its output.
+# Runs PROBE with MEMORY_POOL_SIZE_MB=POOL_MB and requires that it exit with a
+# nonzero status, or with EXPECT_SUCCESS that it exit 0; that its combined
+# stdout and stderr match EXPECT; and, if REJECT is set, that they do not match
+# REJECT.  Death by a signal is a failure either way: error_stop has to leave
+# through halt(), which exits with EXIT_FAILURE when MPI is not initialized,
+# and not die on the pool's assertion that no claims are outstanding, whether
+# before halt() or in a static destructor on the way out.
+# A script rather than PASS_REGULAR_EXPRESSION on the probe itself: ctest
+# ignores the exit status of a test that sets a pass expression.
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -35,8 +37,8 @@ if(EXPECT_SUCCESS)
   if(NOT status STREQUAL "0")
     message(FATAL_ERROR "${run} did not exit 0\n${log}")
   endif()
-elseif(status STREQUAL "0")
-  message(FATAL_ERROR "${run} exited 0; expected a failure\n${log}")
+elseif(NOT status MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "${run} did not exit with a nonzero status\n${log}")
 endif()
 if(NOT "${out}${err}" MATCHES "${EXPECT}")
   message(FATAL_ERROR "${run} output does not match \"${EXPECT}\"\n${log}")

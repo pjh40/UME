@@ -208,7 +208,11 @@ tests; only the Debug builds do.
   - `error_stop_pool_exhausted`: the memory pool's `Finalize` asserts
     that no claims are outstanding. When `error_stop` finalized before
     printing, a Debug build died at that assertion before printing its
-    message; under `NDEBUG` the message still printed.
+    message; under `NDEBUG` the message still printed. Any `Finalize`
+    on the error path, explicit or from a static destructor that
+    `std::exit` runs, is the same red: a Debug build dies on `SIGABRT`
+    instead of exiting with a failure status, and under `NDEBUG` the
+    probe still exits 1.
   - `ume_mpi_interior_zones_in_lower_half` (MPI builds only): the
     search for an interior zone ran off the end of the zone range,
     which a Debug build asserted on.

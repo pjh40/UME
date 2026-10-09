@@ -87,9 +87,9 @@ void show_backtrace() {
 #endif
 }
 
-/* Flush, so that the message precedes anything finalize() writes to stderr and
- * survives a later abort(), which need not flush stdio buffers (glibc's does
- * not): stdout is fully buffered when redirected to a file or pipe. */
+/* Flush, so that the message survives the exit that follows: halt() leaves
+ * through MPI_Abort or std::_Exit, and neither need flush stdio buffers, while
+ * stdout is fully buffered when redirected to a file or pipe. */
 void report_error(char const msg[], bool const show_bt) {
   std::printf("\n%s\n", msg);
   if (show_bt)
@@ -97,6 +97,13 @@ void report_error(char const msg[], bool const show_bt) {
   std::fflush(stdout);
 }
 
+/* Every exit is std::_Exit, not std::exit: the error path runs no static
+ * destructors or atexit handlers, so the memory pool's Finalize (called by the
+ * destructor of the function-local static behind GetMemPool()) and its
+ * assertion that no claims are outstanding never run, and nothing is freed
+ * under a Kokkos that may already be gone.  report_error has flushed stdout;
+ * stderr is unbuffered.  _Exit is also the fallback for an MPI_Abort that
+ * returns. */
 void halt() {
 #ifdef HAVE_MPI
   int mpi_is_initialized, mpi_is_finalized, err = 0;
@@ -106,11 +113,11 @@ void halt() {
   if (mpi_is_initialized && !mpi_is_finalized) {
     err = MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     if (err)
-      std::exit(EXIT_FAILURE);
+      std::_Exit(EXIT_FAILURE);
   } else
-    std::exit(EXIT_FAILURE);
+    std::_Exit(EXIT_FAILURE);
 #else
-  std::exit(EXIT_FAILURE);
+  std::_Exit(EXIT_FAILURE);
 #endif
 }
 
@@ -168,11 +175,11 @@ void finalize() {
 /* With error condition and backtrace, abort the job (if have MPI)
  * or process exit (if no MPI). This is an asynchronous operation:
  * all calling processes will write to standard out.
- * Report before finalizing: the memory pool's Finalize asserts that no claims
- * are outstanding, which pool exhaustion leaves behind in a Debug build. */
+ * Finalizes nothing: the memory pool's Finalize asserts that no claims are
+ * outstanding, which pool exhaustion leaves behind, and a process about to
+ * abort or exit needs neither the pool freed nor Kokkos finalized. */
 extern "C" void error_stop(char const msg[]) {
   report_error(msg, true);
-  finalize();
   halt();
 }
 

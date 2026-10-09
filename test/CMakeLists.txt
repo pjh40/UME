@@ -64,11 +64,13 @@ endif()
 
 # error_stop tests
 
-# Pool exhaustion has to print its message.  error_stop once finalized first,
-# and the pool's Finalize asserts that no claims are outstanding, which the
-# exhaustion leaves behind: a Debug build died on the assertion and the
-# message that explained it never printed.  With a 2 MB pool the same probe's
-# claims fit, and the message must not appear.
+# Pool exhaustion has to print its message and exit with a nonzero status.
+# The exhaustion leaves claims outstanding and the pool's Finalize asserts that
+# none are, so a Debug build dies on that assertion if anything on the error
+# path finalizes the pool: error_stop calling finalize() (once before it
+# printed, losing the message, then after), or a static destructor that
+# std::exit runs.  With a 2 MB pool the same probe's claims fit, and the
+# message must not appear.
 add_executable(error_stop_probe error_stop_probe.cc)
 target_link_libraries(error_stop_probe PRIVATE Ume)
 target_compile_definitions(error_stop_probe PRIVATE
