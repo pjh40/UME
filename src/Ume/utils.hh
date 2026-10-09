@@ -90,6 +90,19 @@ template <class T> void read_bin(std::istream &is, std::vector<T> &data) {
   Ume::skip_line(is);
 }
 
+//! Read a tag written as a string, and fail the stream unless it reads as
+//! `expected`.  Returns whether the stream is still good.
+[[nodiscard]] inline bool read_tag(
+    std::istream &is, std::string_view const expected) {
+  std::string tag;
+  read_bin(is, tag);
+  if (!is || tag != expected) {
+    is.setstate(std::ios::failbit);
+    return false;
+  }
+  return true;
+}
+
 inline std::string ltrim(const std::string &s) {
   const std::string WHITESPACE{" \n\r\t\f\v"};
   size_t start = s.find_first_not_of(WHITESPACE);

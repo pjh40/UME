@@ -17,7 +17,6 @@
 #include "Ume/atomic_add.hh"
 #include "Ume/mem_exec_spaces.hh"
 #include "Ume/soa_idx_helpers.hh"
-#include <cassert>
 
 namespace Ume {
 namespace SOA_Idx {
@@ -40,9 +39,8 @@ void Faces::write(std::ostream &os) const {
 }
 
 void Faces::read(std::istream &is) {
-  std::string dummy;
-  read_bin(is, dummy);
-  assert(dummy == "faces");
+  if (!read_tag(is, "faces"))
+    return;
   Entity::read(is);
   IVREAD("m:f>z1");
   IVREAD("m:f>z2");

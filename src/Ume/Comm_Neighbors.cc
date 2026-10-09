@@ -15,7 +15,6 @@
 
 #include "Ume/Comm_Neighbors.hh"
 #include <algorithm>
-#include <cassert>
 
 namespace Ume {
 
@@ -44,10 +43,9 @@ void write_bin<Comm::Neighbors>(
 
 template <>
 void read_bin<Comm::Neighbors>(std::istream &is, Ume::Comm::Neighbors &nvec) {
+  if (!read_tag(is, "neighbors"))
+    return;
   size_t len{0};
-  std::string dummy;
-  read_bin(is, dummy);
-  assert(dummy == "neighbors");
   read_bin(is, len);
   // A stream that ends inside the length word leaves the bytes it got in
   // `len`; a failed read is an empty one.

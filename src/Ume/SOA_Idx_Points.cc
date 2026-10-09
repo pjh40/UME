@@ -17,7 +17,6 @@
 #include "Ume/atomic_add.hh"
 #include "Ume/mem_exec_spaces.hh"
 #include "Ume/soa_idx_helpers.hh"
-#include <cassert>
 #include <iostream>
 
 namespace Ume {
@@ -40,9 +39,8 @@ void Points::write(std::ostream &os) const {
 }
 
 void Points::read(std::istream &is) {
-  std::string dummy;
-  read_bin(is, dummy);
-  assert(dummy == "points");
+  if (!read_tag(is, "points"))
+    return;
   Entity::read(is);
   read_bin(is, ds().access_vec3v("pcoord"));
 }

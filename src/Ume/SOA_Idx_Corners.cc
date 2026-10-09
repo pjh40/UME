@@ -41,9 +41,8 @@ void Corners::write(std::ostream &os) const {
 }
 
 void Corners::read(std::istream &is) {
-  std::string dummy;
-  read_bin(is, dummy);
-  assert(dummy == "corners");
+  if (!read_tag(is, "corners"))
+    return;
   Entity::read(is);
   IVREAD("m:c>p");
   IVREAD("m:c>z");

@@ -37,9 +37,8 @@ void Zones::write(std::ostream &os) const {
 }
 
 void Zones::read(std::istream &is) {
-  std::string dummy;
-  read_bin(is, dummy);
-  assert(dummy == "zones");
+  if (!read_tag(is, "zones"))
+    return;
   Entity::read(is);
 }
 

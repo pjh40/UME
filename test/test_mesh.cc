@@ -973,6 +973,92 @@ TEST_CASE("mesh: read refuses a copy listed twice", "[mesh][io][comm]") {
   }
 }
 
+namespace {
+
+/* `tag` as a mesh file lays it out: its length, then its characters. */
+std::string encoded_tag(std::string const &tag) {
+  std::ostringstream os;
+  Ume::write_bin(os, tag);
+  return os.str();
+}
+
+} // namespace
+
+/* Each entity in a mesh file opens with a tag, and so does each of its two
+   neighbor lists.  The tags were checked with asserts, which ran on a stream
+   that had already failed as well: a Debug build reading a file cut short died
+   on SIGABRT before its caller could see the failed stream and report it.  A
+   wrong tag now fails the stream and Mesh::read stops there: the entities
+   before it are read, and the one it opens and every later one are left as
+   they were.  Each tag in turn has its last character changed, so that the
+   bytes after it stay where they were and only the tag can fail the read. */
+TEST_CASE("mesh: read fails the stream on a wrong tag", "[mesh][io]") {
+  Bare_Mesh src;
+  populate(src.mesh, true);
+  std::ostringstream written;
+  src.mesh.write(written);
+  std::string const bytes = written.str();
+  auto const original = entities_of(src.mesh);
+
+  struct Tag {
+    std::string what;
+    std::size_t last; // offset of its last character in `bytes`
+    std::size_t index; // of the entity it belongs to, in `original`
+    bool opens_entity; // rather than one of the entity's neighbor lists
+  };
+  std::vector<Tag> tags;
+  std::size_t from = 0;
+  auto const find_tag = [&bytes, &from](std::string const &tag) {
+    std::size_t const at = bytes.find(tag, from);
+    REQUIRE(at != std::string::npos);
+    from = at + tag.size();
+    return from - 1;
+  };
+  std::string const neighbors = encoded_tag("neighbors");
+  for (std::size_t i = 0; i < original.size(); ++i) {
+    std::string const name = original[i].first;
+    tags.push_back({name, find_tag(encoded_tag(name)), i, true});
+    for (char const *const list : {" myCpys", " mySrcs"})
+      tags.push_back({name + list, find_tag(neighbors), i, false});
+  }
+
+  /* Positive controls: the bytes as written read back whole, and each entity
+     of a mesh that has not been read differs from the one written.  So an
+     entity found below to be as it was would have been read had the read gone
+     on. */
+  {
+    std::istringstream stream{bytes};
+    Bare_Mesh dst;
+    dst.mesh.read(stream);
+    REQUIRE_FALSE(stream.fail());
+    REQUIRE(dst.mesh == src.mesh);
+  }
+  Bare_Mesh fresh;
+  auto const unread = entities_of(fresh.mesh);
+  for (std::size_t j = 0; j < unread.size(); ++j)
+    REQUIRE_FALSE(*unread[j].second == *original[j].second);
+
+  for (auto const &[what, last, index, opens_entity] : tags) {
+    INFO("wrong tag: " << what);
+    std::string changed = bytes;
+    changed[last] = '?';
+    std::istringstream stream{changed};
+    Bare_Mesh dst;
+    dst.mesh.read(stream);
+    CHECK(stream.fail());
+    /* A wrong neighbor list tag leaves its entity part read, which is not
+       checked. */
+    auto const read = entities_of(dst.mesh);
+    for (std::size_t j = 0; j < read.size(); ++j) {
+      INFO("entity " << read[j].first);
+      if (j < index)
+        CHECK(*read[j].second == *original[j].second);
+      else if (j > index || opens_entity)
+        CHECK(*read[j].second == *unread[j].second);
+    }
+  }
+}
+
 /* A change to the order of the format made in write and read alike passes
    both round trips above, and misreads every existing input file.  So the
    layout itself is pinned: the zones (a tag and the Entity fields, nothing

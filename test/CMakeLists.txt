@@ -134,9 +134,8 @@ set_tests_properties(scale_mesh_unwritable_output PROPERTIES
 # A partition file that ends early has to fail the run too: Mesh::read goes
 # quiet once its stream fails, and scale_mesh scaled and wrote what it had and
 # printed "Done.".  Ten bytes off the end take the zones' subset count and the
-# newlines after it; the cut has to fall after the last entity and neighbor
-# tag, which a Debug build asserts on.  The same mesh written whole reaches
-# "Done.", the control.
+# newlines after it; ume_serial_truncated_midway_mesh cuts ahead of later tags.
+# The same mesh written whole reaches "Done.", the control.
 add_test(NAME scale_mesh_write_truncated_mesh
   COMMAND write_zone_mask_mesh --drop-last=10
     ${_scale_mesh_dir}/truncated.00000.ume 1 1 -1 -1)
@@ -371,8 +370,17 @@ add_test(NAME ume_serial_write_truncated_mesh
     ${_ume_serial_dir}/truncated.00000.ume 1 1 -1 -1)
 add_test(NAME ume_serial_write_intact_mesh
   COMMAND write_zone_mask_mesh ${_ume_serial_dir}/intact.00000.ume 1 1 -1 -1)
+# The same mesh cut in half, 502 of its 1004 bytes off the end: the file ends
+# inside the length word of the sides' cpy_idx, ahead of the sides' neighbor
+# tags and the corners' and zones' tags.  Each of those was asserted on even
+# once the stream had failed, so a Debug build died on SIGABRT before the read
+# could be reported.
+add_test(NAME ume_serial_write_truncated_midway_mesh
+  COMMAND write_zone_mask_mesh --drop-last=502
+    ${_ume_serial_dir}/truncated-midway.00000.ume 1 1 -1 -1)
 set_tests_properties(
-  ume_serial_write_truncated_mesh ume_serial_write_intact_mesh PROPERTIES
+  ume_serial_write_truncated_mesh ume_serial_write_intact_mesh
+  ume_serial_write_truncated_midway_mesh PROPERTIES
   FIXTURES_SETUP ume_serial_meshes)
 add_test(NAME ume_serial_truncated_mesh
   COMMAND ${CMAKE_COMMAND}
@@ -389,7 +397,15 @@ add_test(NAME ume_serial_intact_mesh
     "-DEXPECT=Reading: [^\r\n]*/intact\\.00000\\.ume"
     "-DREJECT=Unable to"
     ${_exit_status_check})
+add_test(NAME ume_serial_truncated_midway_mesh
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:ume_serial>
+    -DARGS=${_ume_serial_dir}/truncated-midway.00000.ume
+    -DSTATUS=1
+    "-DEXPECT=Unable to read a mesh from file \"[^\"]*/truncated-midway\\.00000\\.ume\"\\."
+    ${_exit_status_check})
 set_tests_properties(ume_serial_truncated_mesh ume_serial_intact_mesh
+  ume_serial_truncated_midway_mesh
   PROPERTIES
   FIXTURES_REQUIRED ume_serial_meshes
   TIMEOUT 90)

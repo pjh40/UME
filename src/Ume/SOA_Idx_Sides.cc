@@ -16,7 +16,6 @@
 #include "Ume/SOA_Idx_Mesh.hh"
 #include "Ume/soa_idx_helpers.hh"
 #include "Ume/mem_exec_spaces.hh"
-#include <cassert>
 
 namespace Ume {
 namespace SOA_Idx {
@@ -62,9 +61,8 @@ void Sides::write(std::ostream &os) const {
 }
 
 void Sides::read(std::istream &is) {
-  std::string dummy;
-  read_bin(is, dummy);
-  assert(dummy == "sides");
+  if (!read_tag(is, "sides"))
+    return;
   Entity::read(is);
   IVREAD("m:s>z");
   IVREAD("m:s>p1");
