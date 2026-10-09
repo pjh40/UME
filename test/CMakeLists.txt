@@ -103,18 +103,29 @@ target_link_libraries(write_zone_mask_mesh PRIVATE Ume)
 target_compile_definitions(write_zone_mask_mesh PRIVATE
   ${COMMON_COMPILE_DEFINITIONS})
 
+# Runs a driver through check_exit_status.cmake, which holds it to an exit
+# status as well as to its output.
+set(_exit_status_check
+  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_exit_status.cmake)
+
 # scale_mesh driver tests
 
+# Each failure below has to exit 1 as well as say why, so each runs through
+# check_exit_status.cmake: under a pass expression ctest ignores the exit
+# status, and a scale_mesh that printed the message and exited 0 passed.
+
 # A basename with no partition file behind it has to stop scale_mesh before it
-# reads the unopened stream as a mesh.  "Aborting." is printed only on the way
-# to main's `return 1`; an unchecked open went on to Mesh::read, which in a
-# Debug build stops at an assertion instead.
+# reads the unopened stream as a mesh.  "Aborting." is printed only on the
+# failure path; an unchecked open went on to Mesh::read, which in a Debug
+# build stops at an assertion instead.
 add_test(NAME scale_mesh_unreadable_mesh
-  COMMAND scale_mesh ${CMAKE_CURRENT_BINARY_DIR}/no-such-mesh 2)
-set_tests_properties(scale_mesh_unreadable_mesh PROPERTIES
-  PASS_REGULAR_EXPRESSION
-    "Unable to open file \"[^\"]*/no-such-mesh\\.00000\\.ume\" for reading\\.[\r\n]+Aborting\\."
-  TIMEOUT 90)
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:scale_mesh>
+    "-DARGS=${CMAKE_CURRENT_BINARY_DIR}/no-such-mesh$<SEMICOLON>2"
+    -DSTATUS=1
+    "-DEXPECT=Unable to open file \"[^\"]*/no-such-mesh\\.00000\\.ume\" for reading\\.[\r\n]+Aborting\\."
+    ${_exit_status_check})
+set_tests_properties(scale_mesh_unreadable_mesh PROPERTIES TIMEOUT 90)
 
 # An output file that cannot be opened has to fail the run too: an unchecked
 # open wrote nothing, printed "Done." and exited 0.  A directory sits where
@@ -126,11 +137,14 @@ add_test(NAME scale_mesh_write_input_mesh
 set_tests_properties(scale_mesh_write_input_mesh PROPERTIES
   FIXTURES_SETUP scale_mesh_input_mesh)
 add_test(NAME scale_mesh_unwritable_output
-  COMMAND scale_mesh ${_scale_mesh_dir}/unwritable 1)
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:scale_mesh>
+    "-DARGS=${_scale_mesh_dir}/unwritable$<SEMICOLON>1"
+    -DSTATUS=1
+    "-DEXPECT=Unable to open file \"[^\"]*/unwritable\\.00001\\.00000\\.ume\" for writing\\.[\r\n]+Aborting\\."
+    ${_exit_status_check})
 set_tests_properties(scale_mesh_unwritable_output PROPERTIES
   FIXTURES_REQUIRED scale_mesh_input_mesh
-  PASS_REGULAR_EXPRESSION
-    "Unable to open file \"[^\"]*/unwritable\\.00001\\.00000\\.ume\" for writing\\.[\r\n]+Aborting\\."
   TIMEOUT 90)
 
 # A partition file that ends early has to fail the run too: Mesh::read goes
@@ -148,11 +162,14 @@ set_tests_properties(scale_mesh_write_truncated_mesh PROPERTIES
 set_tests_properties(scale_mesh_write_intact_mesh PROPERTIES
   FIXTURES_SETUP scale_mesh_intact_input)
 add_test(NAME scale_mesh_truncated_mesh
-  COMMAND scale_mesh ${_scale_mesh_dir}/truncated 1)
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:scale_mesh>
+    "-DARGS=${_scale_mesh_dir}/truncated$<SEMICOLON>1"
+    -DSTATUS=1
+    "-DEXPECT=Unable to read a mesh from file \"[^\"]*/truncated\\.00000\\.ume\"\\.[\r\n]+Aborting\\."
+    ${_exit_status_check})
 set_tests_properties(scale_mesh_truncated_mesh PROPERTIES
   FIXTURES_REQUIRED scale_mesh_truncated_input
-  PASS_REGULAR_EXPRESSION
-    "Unable to read a mesh from file \"[^\"]*/truncated\\.00000\\.ume\"\\.[\r\n]+Aborting\\."
   TIMEOUT 90)
 add_test(NAME scale_mesh_intact_mesh
   COMMAND scale_mesh ${_scale_mesh_dir}/intact 1)
@@ -172,19 +189,28 @@ set_tests_properties(scale_mesh_intact_mesh PROPERTIES
 # startup cannot create its shared-memory segment under the zero limit
 # (PMIX_ERR_OUT_OF_RESOURCE), so MPI_Init aborts before the write is tried.
 # write_mesh's stream check has no MPI branch, and the non-MPI builds run it.
+# The check runs sh, which sets both and execs scale_mesh, for the reason
+# txt2bin_output_over_size_limit gives.
 if(UNIX AND NOT USE_MPI)
   add_test(NAME scale_mesh_write_size_limited_mesh
     COMMAND write_zone_mask_mesh
       ${_scale_mesh_dir}/size_limited.00000.ume 1 1 -1 -1)
   set_tests_properties(scale_mesh_write_size_limited_mesh PROPERTIES
     FIXTURES_SETUP scale_mesh_size_limited_input)
+  set(_scale_mesh_size_limited_args
+    -c "trap '' XFSZ && ulimit -f 0 && exec \"$0\" \"$@\""
+    $<TARGET_FILE:scale_mesh> ${_scale_mesh_dir}/size_limited 1)
+  list(JOIN _scale_mesh_size_limited_args "$<SEMICOLON>"
+    _scale_mesh_size_limited_args)
   add_test(NAME scale_mesh_output_over_size_limit
-    COMMAND sh -c "trap '' XFSZ; ulimit -f 0; exec \"$0\" \"$@\""
-      $<TARGET_FILE:scale_mesh> ${_scale_mesh_dir}/size_limited 1)
+    COMMAND ${CMAKE_COMMAND}
+      -DPROGRAM=sh
+      "-DARGS=${_scale_mesh_size_limited_args}"
+      -DSTATUS=1
+      "-DEXPECT=Unable to write a mesh to file \"[^\"]*/size_limited\\.00001\\.00000\\.ume\"\\.[\r\n]+Aborting\\."
+      ${_exit_status_check})
   set_tests_properties(scale_mesh_output_over_size_limit PROPERTIES
     FIXTURES_REQUIRED scale_mesh_size_limited_input
-    PASS_REGULAR_EXPRESSION
-      "Unable to write a mesh to file \"[^\"]*/size_limited\\.00001\\.00000\\.ume\"\\.[\r\n]+Aborting\\."
     TIMEOUT 90)
 endif()
 
@@ -202,12 +228,18 @@ target_compile_definitions(point_mesh PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 # keeps its original's y and z: scale_mesh once set only the stitched
 # component of a copied point and left the other two at whatever the resize
 # put there, which a mesh with every point at y = z = 0 could not show and
-# the off_axis mesh does.
+# the off_axis mesh does.  The file the read-back reads is removed before the
+# stitch runs: left from an earlier run, it let the read-back pass on a
+# scale_mesh that wrote its output under another name.
 function(add_scale_mesh_stitch_test name expected)
   set(_basename ${_scale_mesh_dir}/${name})
+  set(_output ${_basename}.00002.00000.ume)
   add_test(NAME scale_mesh_write_${name}_mesh
     COMMAND point_mesh write ${_basename}.00000.ume ${ARGN})
-  set_tests_properties(scale_mesh_write_${name}_mesh PROPERTIES
+  add_test(NAME scale_mesh_remove_${name}_output
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${_output})
+  set_tests_properties(
+    scale_mesh_write_${name}_mesh scale_mesh_remove_${name}_output PROPERTIES
     FIXTURES_SETUP scale_mesh_${name}_input)
   add_test(NAME scale_mesh_stitch_${name}
     COMMAND scale_mesh ${_basename} 2)
@@ -216,7 +248,7 @@ function(add_scale_mesh_stitch_test name expected)
     FIXTURES_SETUP scale_mesh_${name}_output
     TIMEOUT 90)
   add_test(NAME scale_mesh_stitched_${name}_points
-    COMMAND point_mesh print ${_basename}.00002.00000.ume)
+    COMMAND point_mesh print ${_output})
   set_tests_properties(scale_mesh_stitched_${name}_points PROPERTIES
     FIXTURES_REQUIRED scale_mesh_${name}_output
     PASS_REGULAR_EXPRESSION "^${expected}$")
@@ -245,7 +277,8 @@ target_compile_definitions(entity_mesh PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 # copied half had mask 0, which every kernel skips, and no subsets, and the
 # offset turned each sentinel into the original's last entity: a boundary
 # face's missing second zone, `m:f>z2 == -1`, became a zone of the original.
-# The expected lines are entity_mesh's mesh doubled along x by hand.
+# The expected lines are entity_mesh's mesh doubled along x by hand.  The
+# output is removed before the stitch, as for the point meshes above.
 set(_entity_lines
   "points lsize 4 size 4"
   "points mask: 1 -1 1 -1"
@@ -295,9 +328,13 @@ set(_entity_lines
   "m:a>e: 0 1"
   "m:a>s: 1 3")
 string(JOIN "[\r\n]+" _entity_expected ${_entity_lines})
+set(_entity_output ${_scale_mesh_dir}/entities.00002.00000.ume)
 add_test(NAME scale_mesh_write_entity_mesh
   COMMAND entity_mesh write ${_scale_mesh_dir}/entities.00000.ume)
-set_tests_properties(scale_mesh_write_entity_mesh PROPERTIES
+add_test(NAME scale_mesh_remove_entity_output
+  COMMAND ${CMAKE_COMMAND} -E rm -f ${_entity_output})
+set_tests_properties(
+  scale_mesh_write_entity_mesh scale_mesh_remove_entity_output PROPERTIES
   FIXTURES_SETUP scale_mesh_entity_input)
 add_test(NAME scale_mesh_stitch_entities
   COMMAND scale_mesh ${_scale_mesh_dir}/entities 2)
@@ -308,7 +345,7 @@ set_tests_properties(scale_mesh_stitch_entities PROPERTIES
   FAIL_REGULAR_EXPRESSION "Aborting\\."
   TIMEOUT 90)
 add_test(NAME scale_mesh_stitched_entities
-  COMMAND entity_mesh print ${_scale_mesh_dir}/entities.00002.00000.ume)
+  COMMAND entity_mesh print ${_entity_output})
 set_tests_properties(scale_mesh_stitched_entities PROPERTIES
   FIXTURES_REQUIRED scale_mesh_entity_output
   PASS_REGULAR_EXPRESSION "^${_entity_expected}[\r\n]*$")
@@ -331,33 +368,36 @@ foreach(_refused IN ITEMS numpe ghost)
   set_tests_properties(scale_mesh_write_${_refused}_mesh PROPERTIES
     FIXTURES_SETUP scale_mesh_${_refused}_input)
   add_test(NAME scale_mesh_refuses_${_refused}
-    COMMAND scale_mesh ${_scale_mesh_dir}/${_refused} 2)
+    COMMAND ${CMAKE_COMMAND}
+      -DPROGRAM=$<TARGET_FILE:scale_mesh>
+      "-DARGS=${_scale_mesh_dir}/${_refused}$<SEMICOLON>2"
+      -DSTATUS=1
+      "-DEXPECT=${_message}\\.[\r\n]+Aborting\\."
+      "-DREJECT=Done\\."
+      ${_exit_status_check})
   set_tests_properties(scale_mesh_refuses_${_refused} PROPERTIES
     FIXTURES_REQUIRED scale_mesh_${_refused}_input
-    PASS_REGULAR_EXPRESSION "${_message}\\.[\r\n]+Aborting\\."
-    FAIL_REGULAR_EXPRESSION "Done\\."
     TIMEOUT 90)
 endforeach()
 
 # The scale factor has to be a whole positive power of 2.  atoi read "1x" as
 # 1 and scaled by it; it read the most negative int as itself, which the
 # power-of-2 test `scale & (scale - 1)` passed (by signed overflow), and the
-# run wrote an unscaled mesh under a negative scale.  scale_mesh_intact_mesh,
-# scale 1 on the same mesh, is the control.
+# run wrote an unscaled mesh under a negative scale.  scale_mesh checks the
+# scale before it reads the mesh, so these need none written.
+# scale_mesh_intact_mesh, scale 1 on the same basename, is the control.
 foreach(_bad_scale IN ITEMS 1x -2147483648)
   add_test(NAME scale_mesh_bad_scale_${_bad_scale}
-    COMMAND scale_mesh ${_scale_mesh_dir}/intact ${_bad_scale})
+    COMMAND ${CMAKE_COMMAND}
+      -DPROGRAM=$<TARGET_FILE:scale_mesh>
+      "-DARGS=${_scale_mesh_dir}/intact$<SEMICOLON>${_bad_scale}"
+      -DSTATUS=1
+      "-DEXPECT=Scale must be a power of 2, got \"${_bad_scale}\""
+      "-DREJECT=Done\\."
+      ${_exit_status_check})
   set_tests_properties(scale_mesh_bad_scale_${_bad_scale} PROPERTIES
-    FIXTURES_REQUIRED scale_mesh_intact_input
-    PASS_REGULAR_EXPRESSION "Scale must be a power of 2, got \"${_bad_scale}\""
-    FAIL_REGULAR_EXPRESSION "Done\\."
     TIMEOUT 90)
 endforeach()
-
-# Runs a driver through check_exit_status.cmake, which holds it to an exit
-# status as well as to its output.
-set(_exit_status_check
-  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_exit_status.cmake)
 
 # The scale factor has to be checked before the mesh is read, as ume_mpi
 # checks its arguments: scale_mesh read the whole mesh first, so a bad scale
