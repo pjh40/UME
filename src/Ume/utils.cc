@@ -61,7 +61,7 @@ std::string mesh_filename(std::string_view const basename, int const pe) {
 }
 
 std::string mesh_filename(
-    std::string_view const basename, int const pe, int const scale) {
+    std::string_view const basename, int const scale, int const pe) {
   return std::format("{}.{:05d}.{:05d}.ume", basename, scale, pe);
 }
 

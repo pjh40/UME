@@ -378,7 +378,7 @@ void scale_mesh(int const scale, Ume::SOA_Idx::Mesh &mesh) {
 
 bool write_mesh(char const *const basename, int const mype, int const scale,
     Ume::SOA_Idx::Mesh &mesh) {
-  std::string const fname = Ume::mesh_filename(basename, mype, scale);
+  std::string const fname = Ume::mesh_filename(basename, scale, mype);
   std::ofstream os(fname);
   if (!os) {
     std::cerr << "Unable to open file \"" << fname << "\" for writing."

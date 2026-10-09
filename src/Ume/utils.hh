@@ -120,8 +120,8 @@ inline std::string trim(const std::string &s) { return rtrim(ltrim(s)); }
 //! The partition file name "<basename>.<pe>.ume", pe zero-filled to five digits
 std::string mesh_filename(std::string_view basename, int pe);
 //! The scaled partition file name "<basename>.<scale>.<pe>.ume", both fields
-//! zero-filled to five digits
-std::string mesh_filename(std::string_view basename, int pe, int scale);
+//! zero-filled to five digits; the arguments come in the order of the fields
+std::string mesh_filename(std::string_view basename, int scale, int pe);
 
 int init_depth(int const delta);
 void debug_attach_point(int const mype);
