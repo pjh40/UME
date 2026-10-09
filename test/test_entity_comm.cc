@@ -81,6 +81,38 @@ public:
 static_assert(std::is_abstract_v<Unstated_Transport>);
 static_assert(!std::is_abstract_v<Stated_Transport>);
 
+/*! Implements the exchange for one field type and nothing else. Transport is
+    a virtual base so that Exchanges_For can combine these into one transport
+    with any subset of the three exchanges. */
+template <class Field> class Exchange_Of : public virtual Transport {
+public:
+  void exchange(
+      Buffers<Field> const & /*sends*/, Buffers<Field> & /*recvs*/) override {}
+};
+
+/*! States the flag and implements stop() and the exchanges for `Fields` only.
+    Were an overload defaulted to an empty body, this would compile with that
+    field type left out, and a gather, scatter or gathscat of that type
+    through it would unpack the untouched, zero-filled receive buffers over
+    the field. */
+template <class... Fields> class Exchanges_For : public Exchange_Of<Fields>... {
+public:
+  bool does_exchanges() const override { return true; }
+  int stop() override { return 0; }
+};
+
+// Every transport implements all three exchanges; none has a default.
+static_assert(
+    std::is_abstract_v<Exchanges_For<DS_Types::DBLV_T, DS_Types::VEC3V_T>>);
+static_assert(
+    std::is_abstract_v<Exchanges_For<DS_Types::INTV_T, DS_Types::VEC3V_T>>);
+static_assert(
+    std::is_abstract_v<Exchanges_For<DS_Types::INTV_T, DS_Types::DBLV_T>>);
+/* Positive control: each transport above differs from this one only by the
+   field type it leaves out. */
+static_assert(!std::is_abstract_v<
+    Exchanges_For<DS_Types::INTV_T, DS_Types::DBLV_T, DS_Types::VEC3V_T>>);
+
 enum class Kind { gather, scatter, gathscat };
 constexpr std::array kinds{Kind::gather, Kind::scatter, Kind::gathscat};
 constexpr std::array<std::string_view, 3> kind_names{
@@ -128,7 +160,7 @@ TEMPLATE_TEST_CASE("entity comm: a transport that does not exchange leaves "
                    "the field alone",
     "[comm]", DS_Types::INTV_T, DS_Types::DBLV_T, DS_Types::VEC3V_T) {
   using Field = TestType;
-  /* The base Transport's exchange is a no-op, so a scatter used to unpack a
+  /* Dummy_Transport's exchange is a no-op, so a scatter used to unpack a
      zero-filled receive buffer over every copy, and a gather the same over
      every source. */
   Dummy_Transport dummy;

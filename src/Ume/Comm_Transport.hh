@@ -28,15 +28,23 @@ namespace Comm {
     data motion. */
 class Transport {
 public:
+  /*! @name Exchanges
+
+      Each transport implements all three; there are no default bodies, so a
+      transport cannot leave one field type out and have a gather, scatter or
+      gathscat of that type unpack untouched receive buffers over the field.
+   */
+  ///@{
   //! Exchange integer field elements
-  virtual void exchange(Buffers<DS_Types::INTV_T> const & /*sends*/,
-      Buffers<DS_Types::INTV_T> & /*recvs*/) {}
-  //! Excange double precision field elements
-  virtual void exchange(Buffers<DS_Types::DBLV_T> const & /*sends*/,
-      Buffers<DS_Types::DBLV_T> & /*recvs*/) {}
+  virtual void exchange(Buffers<DS_Types::INTV_T> const &sends,
+      Buffers<DS_Types::INTV_T> &recvs) = 0;
+  //! Exchange double precision field elements
+  virtual void exchange(Buffers<DS_Types::DBLV_T> const &sends,
+      Buffers<DS_Types::DBLV_T> &recvs) = 0;
   //! Exchange VEC3 field elements
-  virtual void exchange(Buffers<DS_Types::VEC3V_T> const & /*sends*/,
-      Buffers<DS_Types::VEC3V_T> & /*recvs*/) {}
+  virtual void exchange(Buffers<DS_Types::VEC3V_T> const &sends,
+      Buffers<DS_Types::VEC3V_T> &recvs) = 0;
+  ///@}
 
   //! Whether `exchange` moves data between partitions
   /*! Each transport states this; there is no default, so a transport that
@@ -60,11 +68,18 @@ public:
 };
 
 //! A null transport: it exchanges nothing
-/*! does_exchanges() is false, so a gather, scatter or gathscat through it
-    leaves the field unchanged. */
+/*! Its exchanges leave the receive buffers as they were, and does_exchanges()
+    is false, so a gather, scatter or gathscat through it leaves the field
+    unchanged. */
 class Dummy_Transport : public Transport {
 public:
   Dummy_Transport();
+  void exchange(Buffers<DS_Types::INTV_T> const & /*sends*/,
+      Buffers<DS_Types::INTV_T> & /*recvs*/) override {}
+  void exchange(Buffers<DS_Types::DBLV_T> const & /*sends*/,
+      Buffers<DS_Types::DBLV_T> & /*recvs*/) override {}
+  void exchange(Buffers<DS_Types::VEC3V_T> const & /*sends*/,
+      Buffers<DS_Types::VEC3V_T> & /*recvs*/) override {}
   bool does_exchanges() const override { return false; }
   int stop() override { return -1; }
 };
