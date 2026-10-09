@@ -359,6 +359,21 @@ endforeach()
 set(_exit_status_check
   -P ${CMAKE_CURRENT_SOURCE_DIR}/check_exit_status.cmake)
 
+# The scale factor has to be checked before the mesh is read, as ume_mpi
+# checks its arguments: scale_mesh read the whole mesh first, so a bad scale
+# was reported only after a read that can take minutes, and not at all when
+# the read failed.  The basename is scale_mesh_unreadable_mesh's, which with
+# scale 2 is the control: the same missing file reported as "Unable to open".
+add_test(NAME scale_mesh_bad_scale_before_read
+  COMMAND ${CMAKE_COMMAND}
+    -DPROGRAM=$<TARGET_FILE:scale_mesh>
+    "-DARGS=${CMAKE_CURRENT_BINARY_DIR}/no-such-mesh$<SEMICOLON>3"
+    -DSTATUS=1
+    "-DEXPECT=Scale must be a power of 2, got \"3\""
+    "-DREJECT=Unable to open"
+    ${_exit_status_check})
+set_tests_properties(scale_mesh_bad_scale_before_read PROPERTIES TIMEOUT 90)
+
 # ume_serial driver tests
 
 # A rank file that ends early has to fail the run as one that cannot be

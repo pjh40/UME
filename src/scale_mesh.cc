@@ -61,6 +61,23 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  /* The whole argument has to be the number, and it has to be positive before
+     `scale & (scale - 1)` means anything: on the most negative int the
+     subtraction overflows.  Checked before the mesh is read, as ume_mpi checks
+     its arguments, so that a mistyped scale fails before a read that can take
+     minutes rather than after it; and before MPI starts, so that this exit,
+     like the usage one above, has no MPI to finalize. */
+  std::string_view const scale_arg{argv[2]};
+  int scale = 0;
+  auto const [end, ec] = std::from_chars(
+      scale_arg.data(), scale_arg.data() + scale_arg.size(), scale);
+  if (ec != std::errc{} || end != scale_arg.data() + scale_arg.size() ||
+      scale < 1 || (scale & (scale - 1)) != 0) {
+    std::cerr << "Scale must be a power of 2, got \"" << scale_arg << '"'
+              << std::endl;
+    return 1;
+  }
+
   Ume::SOA_Idx::Mesh mesh;
 
   int mype = 0;
@@ -73,44 +90,34 @@ int main(int argc, char *argv[]) {
   if (mype == 0)
     std::cout << "Initializing mesh..." << std::endl;
 
+  /* From here on every exit goes through the one comm.stop() below: a failure
+     that returned from main left MPI unfinalized, which a launcher reports as
+     an improper exit. */
+  int status = 0;
   if (!read_mesh(argv[1], mype, mesh) || !is_serial(mesh)) {
     std::cerr << "Aborting." << std::endl;
-    return 1;
+    status = 1;
+  } else {
+    if (mype == 0)
+      std::cout << "Scaling mesh by a factor of " << scale << "..."
+                << std::endl;
+
+    scale_mesh(scale, mesh);
+
+    if (mype == 0)
+      std::cout << "Writing scaled mesh..." << std::endl;
+
+    if (!write_mesh(argv[1], mype, scale, mesh)) {
+      std::cerr << "Aborting." << std::endl;
+      status = 1;
+    } else if (mype == 0) {
+      std::cout << "Done." << std::endl;
+    }
   }
-
-  /* The whole argument has to be the number, and it has to be positive before
-     `scale & (scale - 1)` means anything: on the most negative int the
-     subtraction overflows. */
-  std::string_view const scale_arg{argv[2]};
-  int scale = 0;
-  auto const [end, ec] = std::from_chars(
-      scale_arg.data(), scale_arg.data() + scale_arg.size(), scale);
-  if (ec != std::errc{} || end != scale_arg.data() + scale_arg.size() ||
-      scale < 1 || (scale & (scale - 1)) != 0) {
-    std::cerr << "Scale must be a power of 2, got \"" << scale_arg << '"'
-              << std::endl;
-    return 1;
-  }
-
-  if (mype == 0)
-    std::cout << "Scaling mesh by a factor of " << scale << "..." << std::endl;
-
-  scale_mesh(scale, mesh);
-
-  if (mype == 0)
-    std::cout << "Writing scaled mesh..." << std::endl;
-
-  if (!write_mesh(argv[1], mype, scale, mesh)) {
-    std::cerr << "Aborting." << std::endl;
-    return 1;
-  }
-
-  if (mype == 0)
-    std::cout << "Done." << std::endl;
 #ifdef HAVE_MPI
   comm.stop();
 #endif
-  return 0;
+  return status;
 }
 
 bool read_mesh(
