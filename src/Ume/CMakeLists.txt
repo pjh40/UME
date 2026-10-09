@@ -74,11 +74,15 @@ if (UME_SANITIZE)
   if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     message(FATAL_ERROR "LLVM Sanitizers require an LLVM-based compiler.")
   endif()
+  # The ignorelist keeps the integer checks out of libstdc++'s and Kokkos's
+  # headers, which wrap unsigned values on purpose (see the file).  It names
+  # a file in the source tree, so it is not exported to an installed Ume.
   target_compile_options(Ume PUBLIC
     -fno-omit-frame-pointer
     -fno-optimize-sibling-calls
     -fsanitize=address,undefined,integer,nullability
     -fsanitize-recover=address
+    $<BUILD_INTERFACE:-fsanitize-ignorelist=${CMAKE_SOURCE_DIR}/test/ubsan.ignorelist>
   )
   target_link_options(Ume PUBLIC
     -fsanitize=address,undefined,integer,nullability
