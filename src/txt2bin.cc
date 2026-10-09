@@ -126,7 +126,11 @@ void expect_tag(std::istream &is, std::string_view const expect) {
   std::string tag(tag_width + 1, '\0');
   is.get(tag.data(), static_cast<std::streamsize>(tag.size()));
   tag.resize(static_cast<std::size_t>(is.gcount()));
-  tag.erase(tag.find_last_not_of(": ") + 1);
+  auto const end = tag.find_last_not_of(": ");
+  if (end == std::string::npos)
+    tag.clear();
+  else
+    tag.erase(end + 1);
   if (tag != expect) {
     std::cerr << "Expecting tag \"" << expect << "\", got \"" << tag << "\""
               << std::endl;
