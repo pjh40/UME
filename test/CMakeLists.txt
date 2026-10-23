@@ -47,7 +47,11 @@ target_compile_definitions(ume_tests PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 # The project does not include(CTest), so there is no default timeout: without
 # one, a case that hangs, or that allocates without bound on a corrupt length,
 # stalls the run instead of failing.
-catch_discover_tests(ume_tests PROPERTIES TIMEOUT 120)
+# SKIP_RETURN_CODE: a Catch2 run whose every case called SKIP() exits 4, and
+# ctest reads that as a failure unless told otherwise.  Catch2 3.5 and later
+# set the property from catch_discover_tests themselves; 3.4, which
+# ubuntu-24.04 packages and CI builds against, does not.
+catch_discover_tests(ume_tests PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 4)
 
 # UME GPU-enabled tests
 
@@ -67,7 +71,7 @@ target_link_libraries(ume_gpu_tests PRIVATE
   Ume Catch2::Catch2)
 
 # The same bound as ume_tests'.
-catch_discover_tests(ume_gpu_tests PROPERTIES TIMEOUT 120)
+catch_discover_tests(ume_gpu_tests PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 4)
 
 # UME build-configuration tests
 
