@@ -95,8 +95,10 @@ struct Reference {
   double scale{0.0};
 };
 
+constexpr std::string_view synopsis{"Usage: ume_mpi [options] <basename>"};
+
 void usage(std::ostream &os) {
-  os << R"(Usage: ume_mpi [options] <basename>
+  os << synopsis << R"(
 
 Reads <basename>.NNNNN.ume on each rank and takes a zone-centered gradient.
 
@@ -128,75 +130,81 @@ template <typename T> bool parse(std::string_view text, T &out) {
 enum class Parse { RUN, HELP, ERROR };
 
 //! Says why, on anything but RUN
-Parse parse_args(int argc, char *argv[], int numpe, Options &opt) {
+/*! Only rank 0 speaks: every rank sees the same command line, so every rank
+    would say the same thing. */
+Parse parse_args(int argc, char *argv[], int mype, int numpe, Options &opt) {
+  /* A command-line error names the problem and the synopsis; the full usage
+     text is what --help is for. */
+  auto fail = [mype](auto const &...why) {
+    if (mype == 0) {
+      std::cerr << "ume_mpi: ";
+      (std::cerr << ... << why);
+      std::cerr << '\n'
+                << synopsis << "\nTry \"ume_mpi --help\" for the options.\n";
+    }
+    return Parse::ERROR;
+  };
+
   for (int i = 1; i < argc; ++i) {
     std::string_view const arg{argv[i]};
-    //! The next argument, or nullptr having said that it is missing
-    auto next = [&](char const *what) -> char const * {
-      if (i + 1 >= argc) {
-        std::cerr << "ume_mpi: " << what << " requires an argument\n";
-        return nullptr;
-      }
-      return argv[++i];
+    //! The argument after this one, or nullptr when there is none
+    auto next = [&]() -> char const * {
+      return i + 1 < argc ? argv[++i] : nullptr;
     };
 
     if (arg == "-h" || arg == "--help") {
-      usage(std::cout);
+      if (mype == 0)
+        usage(std::cout);
       return Parse::HELP;
     } else if (arg == "-i") {
-      char const *const v = next("-i");
+      char const *const v = next();
       if (!v)
-        return Parse::ERROR;
-      if (!parse(v, opt.iterations)) {
-        std::cerr << "ume_mpi: -i wants a count\n";
-        return Parse::ERROR;
-      }
+        return fail("-i needs an iteration count");
+      /* from_chars into a size_t refuses a sign, so "-1" is an error rather
+         than SIZE_MAX iterations, and the whole argument has to be the
+         number. */
+      if (!parse(v, opt.iterations))
+        return fail("the iteration count after -i has to be a non-negative "
+                    "integer, got \"",
+            v, '"');
     } else if (arg == "--dump-grad") {
-      char const *const v = next("--dump-grad");
+      char const *const v = next();
       if (!v)
-        return Parse::ERROR;
+        return fail("--dump-grad needs a file name");
       opt.dump_grad = v;
     } else if (arg == "--compare") {
-      char const *const v = next("--compare");
+      char const *const v = next();
       if (!v)
-        return Parse::ERROR;
+        return fail("--compare needs a file name");
       opt.compare = v;
     } else if (arg == "--tol") {
-      char const *const v = next("--tol");
+      char const *const v = next();
       if (!v)
-        return Parse::ERROR;
-      if (!parse(v, opt.tol)) {
-        std::cerr << "ume_mpi: --tol wants a number\n";
-        return Parse::ERROR;
-      }
+        return fail("--tol needs a tolerance");
+      if (!parse(v, opt.tol))
+        return fail(
+            "the tolerance after --tol has to be a number, got \"", v, '"');
     } else if (arg.starts_with("-") && arg.size() > 1) {
-      std::cerr << "ume_mpi: unknown option \"" << arg << "\"\n";
-      return Parse::ERROR;
+      return fail("unknown option \"", arg, '"');
     } else if (opt.basename.empty()) {
       opt.basename = arg;
     } else {
-      std::cerr << "ume_mpi: one mesh basename, not two\n";
-      return Parse::ERROR;
+      return fail("unexpected argument \"", arg, "\" after the basename \"",
+          opt.basename, '"');
     }
   }
 
-  if (opt.basename.empty()) {
-    usage(std::cerr);
-    return Parse::ERROR;
-  }
-  if (!opt.dump_grad.empty() && !opt.compare.empty()) {
-    std::cerr << "ume_mpi: --dump-grad and --compare are two different runs\n";
-    return Parse::ERROR;
-  }
+  if (opt.basename.empty())
+    return fail("no mesh basename was given");
+  if (!opt.dump_grad.empty() && !opt.compare.empty())
+    return fail("--dump-grad and --compare are two different runs");
   /* A reference has to be the whole answer.  On several ranks each one holds
      a part of it, and gathering them would be a second, unchecked code path
      for producing something we already get for free at -n 1. */
-  if (!opt.dump_grad.empty() && numpe != 1) {
-    std::cerr << "ume_mpi: --dump-grad wants one rank, so that the partition "
-                 "it reads is the serial mesh; this run has "
-              << numpe << '\n';
-    return Parse::ERROR;
-  }
+  if (!opt.dump_grad.empty() && numpe != 1)
+    return fail("--dump-grad wants one rank, so that the partition it reads "
+                "is the serial mesh; this run has ",
+        numpe);
   return Parse::RUN;
 }
 
@@ -386,7 +394,7 @@ int main(int argc, char *argv[]) {
   /* A missing basename is one of parse_args's own errors, which is why there
      is no separate argc check here. */
   Options opt;
-  switch (parse_args(argc, argv, comm.numpe(), opt)) {
+  switch (parse_args(argc, argv, comm.pe(), comm.numpe(), opt)) {
   case Parse::RUN:
     break;
   case Parse::HELP:

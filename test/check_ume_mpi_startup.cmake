@@ -8,9 +8,10 @@
 # launcher command it names (`mpiexec -n 2`, say), and requires that it fail (a
 # nonzero exit status), or with EXPECT_SUCCESS that it exit 0, and that its
 # combined stdout and stderr match EXPECT.
-# The startup failures in ume_mpi have to go through Comm::MPI::abort, which
-# takes every rank down, rather than return from main on the one rank that
-# noticed; EXPECT names the message that tells the two apart.
+# A failure one rank notices on its own, such as a partition it cannot read,
+# has to go through Comm::MPI::abort, which takes every rank down, rather than
+# return from main on that rank; a command-line error fails identically on
+# every rank and returns.  EXPECT names the message that tells the two apart.
 
 cmake_minimum_required(VERSION 3.20)
 

@@ -563,23 +563,25 @@ endif()
 
 # UME driver startup tests
 
-# ume_mpi run as an MPI singleton: a missing basename, one that the
-# --kokkos-* argument stripping leaves missing, and a partition file that
-# cannot be read all have to end in Comm::MPI::abort.  One rank cannot show
-# the others being taken down rather than left in a gathscat; the abort
-# message is what tells abort() from a return out of main().
+# ume_mpi run as an MPI singleton.  A command-line error -- a missing
+# basename, or one that the --kokkos-* argument stripping leaves missing --
+# fails identically on every rank, so ume_mpi returns through its teardown,
+# and the usage synopsis is what the test looks for.  A partition file that
+# cannot be read is one rank's failure and has to end in Comm::MPI::abort:
+# one rank cannot show the others being taken down rather than left in a
+# gathscat, so the abort message is what tells abort() from a return.
 if(TARGET ume_mpi)
   set(_ume_mpi_check
     -DUME_MPI=$<TARGET_FILE:ume_mpi>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_ume_mpi_startup.cmake)
   add_test(NAME ume_mpi_no_basename
     COMMAND ${CMAKE_COMMAND}
-      "-DEXPECT=Usage: ume_mpi <basename>.*Transport::abort: no mesh basename"
+      "-DEXPECT=no mesh basename was given.*Usage: ume_mpi \\[options\\] <basename>"
       ${_ume_mpi_check})
   add_test(NAME ume_mpi_only_kokkos_args
     COMMAND ${CMAKE_COMMAND}
       -DARGS=--kokkos-num-threads=1
-      "-DEXPECT=Usage: ume_mpi <basename>.*Transport::abort: no mesh basename"
+      "-DEXPECT=no mesh basename was given.*Usage: ume_mpi \\[options\\] <basename>"
       ${_ume_mpi_check})
   add_test(NAME ume_mpi_unreadable_mesh
     COMMAND ${CMAKE_COMMAND}
@@ -657,13 +659,13 @@ if(TARGET ume_mpi)
   add_test(NAME ume_mpi_negative_iteration_count
     COMMAND ${CMAKE_COMMAND}
       "-DARGS=lower-interior$<SEMICOLON>-i$<SEMICOLON>-1"
-      "-DEXPECT=iteration count after -i .*got \"-1\".*Transport::abort: invalid iteration count"
+      "-DEXPECT=iteration count after -i .*got \"-1\".*Usage: ume_mpi \\[options\\] <basename>"
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
   add_test(NAME ume_mpi_trailing_garbage_iteration_count
     COMMAND ${CMAKE_COMMAND}
       "-DARGS=lower-interior$<SEMICOLON>-i$<SEMICOLON>2x"
-      "-DEXPECT=iteration count after -i .*got \"2x\".*Transport::abort: invalid iteration count"
+      "-DEXPECT=iteration count after -i .*got \"2x\".*Usage: ume_mpi \\[options\\] <basename>"
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
   add_test(NAME ume_mpi_iteration_count
@@ -673,27 +675,27 @@ if(TARGET ume_mpi)
       "-DEXPECT=Checking gradient result.*Done\\."
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
-  # Everything after the basename has to be "-i <count>".  An -i with no count
-  # and an argument other than -i ran with one iteration, and anything after
-  # the count was ignored; all exited 0, and each has to take the job down with
-  # the usage line.
+  # An -i with no count, an option ume_mpi does not know, and a second
+  # positional argument each have to fail with the usage synopsis rather than
+  # run: the first two once ran with one iteration and the third was ignored,
+  # all exiting 0.
   # ume_mpi_iteration_count above is the control.
   add_test(NAME ume_mpi_missing_iteration_count
     COMMAND ${CMAKE_COMMAND}
       "-DARGS=lower-interior$<SEMICOLON>-i"
-      "-DEXPECT=-i needs an iteration count.*Usage: ume_mpi <basename>.*Transport::abort: invalid arguments"
+      "-DEXPECT=-i needs an iteration count.*Usage: ume_mpi \\[options\\] <basename>"
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
   add_test(NAME ume_mpi_unknown_argument
     COMMAND ${CMAKE_COMMAND}
       "-DARGS=lower-interior$<SEMICOLON>-n$<SEMICOLON>2"
-      "-DEXPECT=unexpected argument \"-n\".*Usage: ume_mpi <basename>.*Transport::abort: invalid arguments"
+      "-DEXPECT=unknown option \"-n\".*Usage: ume_mpi \\[options\\] <basename>"
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
   add_test(NAME ume_mpi_argument_after_iteration_count
     COMMAND ${CMAKE_COMMAND}
       "-DARGS=lower-interior$<SEMICOLON>-i$<SEMICOLON>2$<SEMICOLON>extra"
-      "-DEXPECT=unexpected argument \"extra\".*Usage: ume_mpi <basename>.*Transport::abort: invalid arguments"
+      "-DEXPECT=unexpected argument \"extra\" after the basename.*Usage: ume_mpi \\[options\\] <basename>"
       ${_ume_mpi_check}
     WORKING_DIRECTORY ${_zone_mask_dir})
   set_tests_properties(
