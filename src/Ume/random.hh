@@ -29,10 +29,22 @@
 
 #include <cstdint>
 
+/* SplitMix64 is defined on wrapping 64-bit arithmetic: its additions and
+   multiplications overflow by design, and clang's -fsanitize=integer, which a
+   UME_SANITIZE build turns on because unsigned wraparound is so often a bug in
+   index arithmetic, would report every step.  The check is turned off for this
+   one function and stays on for the rest of the file. */
+#if defined(__clang__)
+#define UME_WRAPS_BY_DESIGN \
+  __attribute__((no_sanitize("unsigned-integer-overflow")))
+#else
+#define UME_WRAPS_BY_DESIGN
+#endif
+
 namespace Ume {
 
 //! One step of SplitMix64, advancing `state`
-inline std::uint64_t next_random(std::uint64_t &state) {
+UME_WRAPS_BY_DESIGN inline std::uint64_t next_random(std::uint64_t &state) {
   std::uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
   z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
   z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;

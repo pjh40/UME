@@ -14,6 +14,7 @@
 */
 
 #include "Ume/Decompose.hh"
+#include "Ume/random.hh"
 #include <algorithm>
 #include <cstdint>
 #include <map>
@@ -92,12 +93,8 @@ void to_csr(Pairs const &pairs, int nparts, std::vector<int> &start,
     gid[static_cast<std::size_t>(fill[static_cast<std::size_t>(r)]++)] = g;
 }
 
-std::uint64_t splitmix64(std::uint64_t x) {
-  x += 0x9E3779B97F4A7C15ULL;
-  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-  x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-  return x ^ (x >> 31);
-}
+//! SplitMix64 as a hash of `x`: one step from `x`, on a copy
+std::uint64_t splitmix64(std::uint64_t x) { return next_random(x); }
 
 //! Pick the SOURCE rank of every global entity from the ranks holding it
 /*! `pairs` must be sorted and deduplicated, so the ranks holding one entity
