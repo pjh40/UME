@@ -1002,11 +1002,23 @@ endif()
 if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
   message(STATUS "Tests: MPI is available (${MPIEXEC_EXECUTABLE})")
 
+  # Open MPI gives a run one slot per core and refuses -n 3 on the two-core
+  # GitHub runners unless told to oversubscribe.  The flag is Open MPI's own,
+  # so it is passed only when the launcher is Open MPI; MPICH's hydra needs
+  # no telling.
+  execute_process(COMMAND ${MPIEXEC_EXECUTABLE} --version
+    OUTPUT_VARIABLE _mpiexec_version ERROR_VARIABLE _mpiexec_version)
+  if(_mpiexec_version MATCHES "Open MPI|OpenRTE")
+    set(_oversubscribe --oversubscribe)
+  else()
+    set(_oversubscribe)
+  endif()
+
   # Everything above reads the partitions back with a serial program.  This
   # is the first test to hand them to the code they were written for, so it
   # is also the first thing to run a Transport that really communicates.
   add_test(NAME partition_mpi_run
-    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${_oversubscribe}
             ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ume_mpi> ${MPIEXEC_POSTFLAGS}
             part
     WORKING_DIRECTORY ${PARTITION_WORKDIR})
@@ -1049,7 +1061,7 @@ if(TARGET ume_mpi AND MPIEXEC_EXECUTABLE)
   # accumulation in gradzatz, so the two runs agree to roundoff rather than to
   # the bit, and test_brick.cc's exact comparison would be the wrong test.
   add_test(NAME partition_mpi_compare
-    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${_oversubscribe}
             ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ume_mpi> ${MPIEXEC_POSTFLAGS}
             part --compare zgrad.ref --tol 1e-12
     WORKING_DIRECTORY ${PARTITION_WORKDIR})
